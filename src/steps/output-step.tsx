@@ -21,13 +21,13 @@ export function OutputStep() {
       <div className="grid gap-6 lg:grid-cols-2">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card className="h-full ring-1 ring-cyan-400/30">
-            <CardTitle icon={<Ear className="size-4" />} title="What everyone hears" hint="The stego audio as it was received — just music." />
+            <CardTitle icon={<Ear className="size-4" />} title="What everyone hears" hint="Normal audio — the hidden message should not be audible." />
             <WaveformPlayer samples={stego} color="cyan" label="received stego audio" height={88} downloadName="stego-received.wav" />
           </Card>
         </motion.div>
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <Card className="h-full ring-1 ring-emerald-400/40">
-            <CardTitle icon={<Volume2 className="size-4" />} title="What the receiver hears" hint="The secret voice, recovered with the right key." />
+            <CardTitle icon={<Volume2 className="size-4" />} title="What the receiver hears" hint="Recovered secret voice, reconstructed with the correct key." />
             <WaveformPlayer samples={decoded.stages.recovered.samples} color="emerald" label="recovered secret" height={88} downloadName="recovered-secret.wav" normalize />
           </Card>
         </motion.div>
@@ -38,7 +38,7 @@ export function OutputStep() {
           <Card className="ring-1 ring-violet-400/40">
             <CardTitle
               icon={<MessageSquareLock className="size-4" />}
-              title="And the hidden text"
+              title="Recovered secret text"
               hint="Read from the 20.1–21.9 kHz lane of the same FFT: despread, BPSK decision, AES-GCM decryption."
             />
             <TextDecodePanel info={decoded.text} sent={encoded?.text ?? null} />
@@ -61,7 +61,7 @@ export function OutputStep() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
-          <CardTitle title="The secret, before and after" hint="Left: original (band-limited) · Right: recovered" />
+          <CardTitle title="Technical results" hint="Compare the original and recovered signals, spectra and metrics below." />
           {encoded && <WaveformPlayer samples={encoded.stages['secret-bandlimited'].samples} color="violet" label="original secret (300–3400 Hz)" normalize compact />}
           <div className="mt-3">
             <WaveformPlayer
@@ -90,7 +90,7 @@ export function OutputStep() {
       <Card className="ring-1 ring-rose-400/30">
         <CardTitle
           icon={<ShieldAlert className="size-4 text-rose-300" />}
-          title="And with the wrong key?"
+          title="What happens with the wrong key?"
           hint={`Decoded the same audio with key “${wk.key}” (one character added).`}
         />
         <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">

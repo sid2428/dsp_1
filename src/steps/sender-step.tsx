@@ -42,8 +42,8 @@ export function SenderStep() {
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-2">
         <AudioSourceCard
-          title="1 · Cover music"
-          hint="The innocent track everyone will hear. Rich, wide-band music works best."
+          title="Audio everyone will hear"
+          hint="Choose the normal cover audio. This is the cover signal used by the steganography system."
           icon={<Music className="size-4" />}
           clip={cover}
           onClip={setCover}
@@ -53,8 +53,8 @@ export function SenderStep() {
           color="cyan"
         />
         <AudioSourceCard
-          title="2 · Secret voice message"
-          hint="Speech to hide. Record yourself or upload a clip; 300–3400 Hz is kept."
+          title="Voice message to hide"
+          hint="Record or upload the secret voice. Speech is band-limited to 300–3400 Hz before frequency-domain embedding."
           icon={<Mic className="size-4" />}
           clip={secret}
           onClip={setSecret}
@@ -70,8 +70,8 @@ export function SenderStep() {
       <Card>
         <CardTitle
           icon={<KeyRound className="size-4" />}
-          title="3 · Shared secret key & embedding strength"
-          hint="The key seeds the sub-band shuffle. The receiver needs the same key."
+          title="Secret key and hiding strength"
+          hint="The receiver needs the same key. It controls keyed sub-band scrambling so the hidden voice can be recovered."
         />
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
@@ -92,7 +92,7 @@ export function SenderStep() {
             </div>
           </div>
           <Slider
-            label="Hidden band level relative to cover (lower = stealthier, higher = more robust)"
+            label="How strongly should the secret be hidden?"
             value={strengthDb}
             min={-40}
             max={-10}
@@ -100,6 +100,7 @@ export function SenderStep() {
             onChange={setStrengthDb}
             format={(v) => `${v} dB`}
           />
+          <p className="-mt-3 text-xs text-slate-500">Stronger embedding can improve recovery, but makes the hidden signal easier to detect.</p>
         </div>
       </Card>
 
@@ -125,7 +126,7 @@ export function SenderStep() {
           }}
         />
         <Button size="lg" onClick={run} loading={busy === 'encode'} disabled={!cover || !secret || !key.trim() || textTooLong} icon={<ArrowRight className="size-5" />}>
-          Encode secret into cover
+          Hide secret in audio
         </Button>
       </div>
     </div>

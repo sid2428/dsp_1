@@ -34,14 +34,14 @@ export function ChannelStep() {
         <Card>
           <CardTitle
             icon={<SlidersHorizontal className="size-4" />}
-            title="Channel conditions"
+            title="What happens during transmission"
             hint="Simulate what happens to the file on its way. A clean channel = sending the WAV as an attachment."
           />
           <div className="space-y-5">
-            <Switch checked={channel.quantize16} onChange={(v) => setChannel({ quantize16: v })} label="Save as 16-bit PCM WAV (quantisation)" />
-            <Switch checked={noisy} onChange={(v) => setChannel({ noiseSnrDb: v ? 30 : null })} label="Add white Gaussian noise" />
+            <Switch checked={channel.quantize16} onChange={(v) => setChannel({ quantize16: v })} label="Quantise to 16-bit audio" />
+            <Switch checked={noisy} onChange={(v) => setChannel({ noiseSnrDb: v ? 30 : null })} label="Add transmission noise" />
             <Slider
-              label="Noise level (SNR of channel)"
+              label="Amount of noise"
               value={channel.noiseSnrDb ?? 30}
               min={0}
               max={60}
@@ -50,15 +50,16 @@ export function ChannelStep() {
               onChange={(v) => setChannel({ noiseSnrDb: v })}
               format={(v) => `${v} dB`}
             />
-            <Slider label="Volume change" value={channel.gainDb} min={-20} max={6} step={1} onChange={(v) => setChannel({ gainDb: v })} format={(v) => `${v > 0 ? '+' : ''}${v} dB`} />
+            <p className="-mt-3 text-xs text-slate-500">The SNR value is the signal-to-noise ratio: higher means a cleaner transmission.</p>
+            <Slider label="Change volume during transmission" value={channel.gainDb} min={-20} max={6} step={1} onChange={(v) => setChannel({ gainDb: v })} format={(v) => `${v > 0 ? '+' : ''}${v} dB`} />
             <Button className="w-full" size="lg" onClick={send} loading={sending} icon={<Send className="size-4" />}>
-              {transmitted ? 'Transmit again' : 'Transmit stego audio'}
+              {transmitted ? 'Send again' : 'Transmit stego audio'}
             </Button>
           </div>
         </Card>
 
         <Card>
-          <CardTitle title="At the receiver" hint="The file that arrived. Nobody listening in hears anything but music." />
+          <CardTitle title="Audio received" hint="The file that arrived. Anyone listening should hear only the normal audio." />
           {delivered && transmitted ? (
             <div className="space-y-4">
               <WaveformPlayer samples={transmitted.received.samples} color="cyan" label="received.wav" downloadName="received.wav" height={72} />
@@ -82,7 +83,7 @@ export function ChannelStep() {
 
       <div className="flex justify-end">
         <Button size="lg" onClick={() => goTo(3)} disabled={!delivered} icon={<ArrowRight className="size-5" />}>
-          Go to receiver
+          Recover the secret
         </Button>
       </div>
     </div>

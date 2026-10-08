@@ -63,8 +63,14 @@ export function EncodeStep() {
 
   return (
     <div className="space-y-6">
+      <Card className="border-cyan-400/20 bg-cyan-400/[0.04]">
+        <CardTitle title="How did this work?" hint="Technical explanation" />
+        <p className="text-sm leading-relaxed text-slate-300">
+          The application transforms the audio into the frequency domain using FFT, places the hidden information in a high-frequency region, and converts the result back into audio. The detailed DSP visualisations below let you inspect every stage.
+        </p>
+      </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Cover vs stego SNR" value={fmtDb(metrics.coverSnrDb)} unit="dB" hint="How little the cover changed" />
+        <Metric label="Cover vs stego SNR" value={fmtDb(metrics.coverSnrDb)} unit="dB" hint="How much the original audio changed" />
         <Metric label="Hidden band level" value={fmtDb(metrics.hiddenLevelDb)} unit="dB" tone="violet" hint="Energy of the secret relative to the stego file" />
         <Metric
           label="Carrier band"
@@ -118,7 +124,7 @@ export function EncodeStep() {
 
       <div className="flex justify-end">
         <Button size="lg" onClick={() => goTo(2)} icon={<ArrowRight className="size-5" />}>
-          Send over the channel
+          Send the audio
         </Button>
       </div>
     </div>

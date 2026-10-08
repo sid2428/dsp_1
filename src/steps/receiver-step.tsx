@@ -36,7 +36,7 @@ export function ReceiverStep() {
   return (
     <div className="space-y-6">
       <Card>
-        <CardTitle icon={<Radio className="size-4" />} title="Receiver setup" hint={`Input: ${source}`} />
+        <CardTitle icon={<Radio className="size-4" />} title="Technical decoder settings" hint={`Received audio: ${source}`} />
         <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr_auto] lg:items-end">
           <div className="space-y-2">
             <label htmlFor="rkey" className="flex items-center gap-2 text-xs text-slate-400">
@@ -59,7 +59,7 @@ export function ReceiverStep() {
             />
           </div>
           <div className="space-y-2">
-            <div className="text-xs text-slate-400">FFT algorithm used by the decoder</div>
+            <div className="text-xs text-slate-400">FFT algorithm <span className="text-slate-500">(used by the decoder)</span></div>
             <Segmented
               value={fftKind}
               onChange={s.setFftKind}
@@ -74,7 +74,7 @@ export function ReceiverStep() {
               Load stego WAV
             </Button>
             <Button onClick={() => void s.decode()} loading={busy === 'decode'} disabled={!received || !receiverKey.trim()} icon={<Binary className="size-4" />}>
-              Decode with FFT
+              Recover hidden message
             </Button>
           </div>
           <input
@@ -162,7 +162,7 @@ export function ReceiverStep() {
 
       <div className="flex justify-end">
         <Button size="lg" onClick={() => s.goTo(4)} disabled={!decoded} icon={<ArrowRight className="size-5" />}>
-          Hear the output
+          Hear the recovered secret
         </Button>
       </div>
     </div>

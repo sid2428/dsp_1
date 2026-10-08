@@ -8,11 +8,13 @@ import type { ChannelOutput, DecodeOutput, EncodeOutput } from '../worker/protoc
 
 export const STEPS = ['Sender', 'Encode', 'Channel', 'Receiver', 'Output'] as const
 export type StepIndex = 0 | 1 | 2 | 3 | 4
+export type UIMode = 'beginner' | 'dsp'
 
 type Busy = null | 'encode' | 'channel' | 'decode'
 
 interface StegoState {
   step: StepIndex
+  uiMode: UIMode
   cover: AudioClip | null
   secret: AudioClip | null
   key: string
@@ -31,6 +33,7 @@ interface StegoState {
   error: string | null
 
   goTo: (step: StepIndex) => void
+  setUIMode: (mode: UIMode) => void
   setCover: (clip: AudioClip | null) => void
   setSecret: (clip: AudioClip | null) => void
   setKey: (key: string) => void
@@ -51,6 +54,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export const useStegoStore = create<StegoState>((set, get) => ({
   step: 0,
+  uiMode: 'beginner',
   cover: null,
   secret: null,
   key: 'dsp-cie-2026',
@@ -67,6 +71,7 @@ export const useStegoStore = create<StegoState>((set, get) => ({
   error: null,
 
   goTo: (step) => set({ step: Math.min(step, get().maxReachableStep()) as StepIndex, error: null }),
+  setUIMode: (uiMode) => set({ uiMode }),
   // Changing an upstream input invalidates everything computed from it.
   setCover: (cover) => set({ cover, encoded: null, transmitted: null, decoded: null }),
   setSecret: (secret) => set({ secret, encoded: null, transmitted: null, decoded: null }),
