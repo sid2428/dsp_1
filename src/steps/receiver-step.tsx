@@ -2,6 +2,7 @@ import { ArrowRight, Binary, CheckCircle2, KeyRound, Radio, Upload, Workflow, XC
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadClipFromFile } from '../audio/load-audio'
 import { ButterflyExplorer } from '../components/butterfly/butterfly-explorer'
+import { BeginnerTour, type BeginnerTourStep } from '../components/layout/beginner-tour'
 import { PipelineFlow } from '../components/pipeline/pipeline-flow'
 import { PermutationView } from '../components/pipeline/permutation-view'
 import { TextDecodePanel, TextStatusBanner } from '../components/text-lane/text-result'
@@ -14,6 +15,13 @@ import { useReveal } from './use-reveal'
 
 const MAX_ORDER = Math.max(...DECODE_NODES.map((n) => n.order))
 
+const BEGINNER_RECEIVER_TOUR_STEPS: BeginnerTourStep[] = [
+  { target: 'receiver-overview', title: 'What are we doing?', text: 'We are now trying to recover the hidden information from the received audio.\n\nThe receiver only has the transmitted audio, so it must locate and decode the hidden signal.' },
+  { target: 'receiver-key', title: 'Why do we need the key?', text: 'The hidden information was protected using the shared secret key.\n\nThe receiver must use the correct key to recover the hidden information correctly.' },
+  { target: 'receiver-fft', title: 'How does decoding work?', text: 'The receiver uses the FFT to examine the received signal in the frequency domain.\n\nIt locates the hidden frequency region, extracts the encoded information and reconstructs the original secret.' },
+  { target: 'receiver-action', title: 'Your turn', text: 'Enter the receiver key and start decoding.\n\nThen we will compare the recovered result with the original secret.' },
+]
+
 export function ReceiverStep() {
   const s = useStegoStore()
   const { decoded, receiverKey, key, fftKind, busy, receivedFile, transmitted } = s
@@ -22,7 +30,12 @@ export function ReceiverStep() {
   const [epoch, setEpoch] = useState(0)
   const revealed = useReveal(MAX_ORDER, tab === 'pipeline' ? decoded : null, epoch)
   const [selected, setSelected] = useState('recovered')
+  const [tourOpen, setTourOpen] = useState(s.uiMode === 'beginner')
   const node = useMemo(() => DECODE_NODES.find((n) => n.id === selected) ?? DECODE_NODES[0], [selected])
+
+  useEffect(() => {
+    setTourOpen(s.uiMode === 'beginner')
+  }, [s.uiMode])
 
   useEffect(() => {
     const latest = DECODE_NODES.find((n) => n.order === revealed)
@@ -35,10 +48,10 @@ export function ReceiverStep() {
 
   return (
     <div className="space-y-6">
-      <Card>
+      <Card data-tour-target="receiver-overview">
         <CardTitle icon={<Radio className="size-4" />} title="Technical decoder settings" hint={`Received audio: ${source}`} />
         <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr_auto] lg:items-end">
-          <div className="space-y-2">
+          <div data-tour-target="receiver-key" className="space-y-2">
             <label htmlFor="rkey" className="flex items-center gap-2 text-xs text-slate-400">
               <KeyRound className="size-3.5" /> Receiver’s key
               {!s.encoded ? null : keyMatches ? (
@@ -58,7 +71,7 @@ export function ReceiverStep() {
               className="w-full rounded-xl bg-black/30 px-3 py-2 font-mono text-sm text-amber-200 outline-none ring-1 ring-white/10 focus:ring-amber-300/60"
             />
           </div>
-          <div className="space-y-2">
+          <div data-tour-target="receiver-fft" className="space-y-2">
             <div className="text-xs text-slate-400">FFT algorithm <span className="text-slate-500">(used by the decoder)</span></div>
             <Segmented
               value={fftKind}
@@ -73,7 +86,7 @@ export function ReceiverStep() {
             <Button variant="secondary" icon={<Upload className="size-4" />} onClick={() => fileRef.current?.click()}>
               Load stego WAV
             </Button>
-            <Button onClick={() => void s.decode()} loading={busy === 'decode'} disabled={!received || !receiverKey.trim()} icon={<Binary className="size-4" />}>
+            <Button data-tour-target="receiver-action" onClick={() => void s.decode()} loading={busy === 'decode'} disabled={!received || !receiverKey.trim()} icon={<Binary className="size-4" />}>
               Recover hidden message
             </Button>
           </div>
@@ -165,6 +178,7 @@ export function ReceiverStep() {
           Hear the recovered secret
         </Button>
       </div>
+      <BeginnerTour open={s.uiMode === 'beginner' && tourOpen} steps={BEGINNER_RECEIVER_TOUR_STEPS} onClose={() => setTourOpen(false)} />
     </div>
   )
 }

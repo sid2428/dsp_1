@@ -1,14 +1,27 @@
 import { Ear, Lock, MessageSquareLock, RotateCcw, ShieldAlert, Volume2 } from 'lucide-react'
 import { motion } from 'motion/react'
+import { useEffect, useState } from 'react'
 import { WaveformPlayer } from '../components/audio/waveform-player'
 import { SpectrogramCanvas, specMax } from '../components/charts/spectrogram-canvas'
+import { BeginnerTour, type BeginnerTourStep } from '../components/layout/beginner-tour'
 import { marksFor } from '../components/pipeline/stage-inspector'
 import { TextDecodePanel, TextStatusBanner } from '../components/text-lane/text-result'
 import { Button, Card, CardTitle, fmtDb, Metric } from '../components/ui/primitives'
 import { useStegoStore } from '../store/use-stego-store'
 
+const BEGINNER_OUTPUT_TOUR_STEPS: BeginnerTourStep[] = [
+  { target: 'results-overview', title: 'What are we looking at?', text: 'We are comparing the original and recovered results.\n\nThis lets us see whether the hidden information survived the complete transmission and decoding process.' },
+  { target: 'results-recovered', title: 'Why are we comparing them?', text: 'A successful steganography system should recover the hidden information while keeping the cover audio close to its original form.\n\nThe comparison helps us evaluate how well the system worked.' },
+  { target: 'results-technical', title: 'How do we evaluate the result?', text: 'We can compare the waveforms and frequency spectra, listen to the recovered audio and inspect the available signal-quality metrics.\n\nThese give us both a visual and numerical view of the result.' },
+  { target: 'results-recovered', title: 'Your turn', text: 'Listen to the recovered audio and compare it with the original.\n\nYou can also inspect the spectrum, spectrogram and metrics to understand what happened during the experiment.' },
+]
+
 export function OutputStep() {
-  const { encoded, decoded, transmitted, receivedFile, goTo } = useStegoStore()
+  const { encoded, decoded, transmitted, receivedFile, goTo, uiMode } = useStegoStore()
+  const [tourOpen, setTourOpen] = useState(uiMode === 'beginner')
+  useEffect(() => {
+    setTourOpen(uiMode === 'beginner')
+  }, [uiMode])
   if (!decoded) return null
   const stego = receivedFile?.samples ?? transmitted?.received.samples ?? decoded.stages.received.samples
   const m = decoded.metrics
@@ -18,14 +31,14 @@ export function OutputStep() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div data-tour-target="results-overview" className="grid gap-6 lg:grid-cols-2">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card className="h-full ring-1 ring-cyan-400/30">
             <CardTitle icon={<Ear className="size-4" />} title="What everyone hears" hint="Normal audio — the hidden message should not be audible." />
             <WaveformPlayer samples={stego} color="cyan" label="received stego audio" height={88} downloadName="stego-received.wav" />
           </Card>
         </motion.div>
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+        <motion.div data-tour-target="results-recovered" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <Card className="h-full ring-1 ring-emerald-400/40">
             <CardTitle icon={<Volume2 className="size-4" />} title="What the receiver hears" hint="Recovered secret voice, reconstructed with the correct key." />
             <WaveformPlayer samples={decoded.stages.recovered.samples} color="emerald" label="recovered secret" height={88} downloadName="recovered-secret.wav" normalize />
@@ -60,7 +73,7 @@ export function OutputStep() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+        <Card data-tour-target="results-technical">
           <CardTitle title="Technical results" hint="Compare the original and recovered signals, spectra and metrics below." />
           {encoded && <WaveformPlayer samples={encoded.stages['secret-bandlimited'].samples} color="violet" label="original secret (300–3400 Hz)" normalize compact />}
           <div className="mt-3">
@@ -129,6 +142,7 @@ export function OutputStep() {
           Try other audio
         </Button>
       </div>
+      <BeginnerTour open={uiMode === 'beginner' && tourOpen} steps={BEGINNER_OUTPUT_TOUR_STEPS} onClose={() => setTourOpen(false)} />
     </div>
   )
 }

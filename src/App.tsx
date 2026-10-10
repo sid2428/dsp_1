@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { AlertTriangle, AudioWaveform, Loader2, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Stepper } from './components/layout/stepper'
+import { WelcomeScreen } from './components/layout/welcome-screen'
 import { ChannelStep } from './steps/channel-step'
 import { EncodeStep } from './steps/encode-step'
 import { OutputStep } from './steps/output-step'
@@ -31,9 +33,18 @@ const BUSY_TEXT = {
 } as const
 
 export default function App() {
-  const { step, error, setError, busy, uiMode, setUIMode } = useStegoStore()
+  const { step, error, setError, busy, uiMode, setUIMode, goTo } = useStegoStore()
+  const [welcomeOpen, setWelcomeOpen] = useState(true)
   const StepView = STEPS[step]
   const intro = STEP_INTRO[step]
+
+  const selectMode = (mode: 'beginner' | 'dsp') => {
+    setUIMode(mode)
+    goTo(0)
+    setWelcomeOpen(false)
+  }
+
+  if (welcomeOpen) return <WelcomeScreen onSelectMode={selectMode} />
 
   return (
     <div className="bg-grid min-h-screen">
