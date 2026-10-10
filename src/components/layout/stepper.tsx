@@ -3,7 +3,8 @@ import { motion } from 'motion/react'
 import { STEPS, useStegoStore, type StepIndex } from '../../store/use-stego-store'
 import { cn } from '../ui/primitives'
 
-const SUBTITLES = ['upload audio', 'hide in spectrum', 'send the file', 'FFT decoding', 'listen']
+const LABELS = ['Choose Audio', 'Hide Secret', 'Send Audio', 'Recover', 'Results']
+const SUBTITLES = ['Cover + secret', 'FFT embedding', 'Channel simulation', 'FFT decoding', 'Recovered output']
 
 export function Stepper() {
   const { step, goTo, maxReachableStep } = useStegoStore()
@@ -11,13 +12,13 @@ export function Stepper() {
 
   return (
     <nav aria-label="Progress" className="flex items-center gap-1 overflow-x-auto">
-      {STEPS.map((label, i) => {
+      {STEPS.map((_, i) => {
         const idx = i as StepIndex
         const active = step === idx
         const done = idx < step || idx <= reachable - 1
         const enabled = idx <= reachable
         return (
-          <div key={label} className="flex items-center">
+          <div key={i} className="flex items-center">
             <button
               onClick={() => enabled && goTo(idx)}
               disabled={!enabled}
@@ -35,7 +36,7 @@ export function Stepper() {
                 {done && !active ? <Check className="size-3.5" /> : i + 1}
               </span>
               <span className="hidden sm:block">
-                <span className="block text-xs font-semibold text-white">{label}</span>
+                <span className="block text-xs font-semibold text-white">{LABELS[i]}</span>
                 <span className="block text-[10px] text-slate-400">{SUBTITLES[i]}</span>
               </span>
               {active && <motion.span layoutId="step-underline" className="absolute inset-x-3 -bottom-px h-0.5 rounded bg-cyan-400" />}

@@ -2,15 +2,28 @@ import { ArrowRight, Send, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { WaveformPlayer } from '../components/audio/waveform-player'
 import { TransmissionAnimation } from '../components/channel/transmission-animation'
+import { BeginnerTour, type BeginnerTourStep } from '../components/layout/beginner-tour'
 import { Button, Card, CardTitle, fmtDb, Metric, Slider, Switch } from '../components/ui/primitives'
 import { useStegoStore } from '../store/use-stego-store'
 
 const MIN_ANIMATION_MS = 2200
 
+const BEGINNER_CHANNEL_TOUR_STEPS: BeginnerTourStep[] = [
+  { target: 'channel-overview', title: 'What are we doing?', text: 'We are simulating what happens when the encoded audio is transmitted through a communication channel.\n\nThe encoded audio now travels from the sender toward the receiver.' },
+  { target: 'channel-controls', title: 'Why are we doing this?', text: 'Real communication systems are not perfect.\n\nNoise, quantization and changes in signal level can affect the received audio. We simulate these effects to see whether the hidden information can still be recovered.' },
+  { target: 'channel-metrics', title: 'How does it work?', text: 'We apply controlled changes to the encoded signal and observe how the received signal differs from the transmitted signal.\n\nThe Signal-to-Noise Ratio, or SNR, helps us measure the strength of the useful signal compared with noise.' },
+  { target: 'channel-action', title: 'Your turn', text: 'Try the channel settings and transmit the encoded audio.\n\nAfter transmission, we will use the received signal to recover the hidden information.' },
+]
+
 export function ChannelStep() {
-  const { channel, setChannel, transmit, transmitted, busy, goTo } = useStegoStore()
+  const { channel, setChannel, transmit, transmitted, busy, goTo, uiMode } = useStegoStore()
   const [animating, setAnimating] = useState(false)
+  const [tourOpen, setTourOpen] = useState(uiMode === 'beginner')
   const noisy = channel.noiseSnrDb !== null
+
+  useEffect(() => {
+    setTourOpen(uiMode === 'beginner')
+  }, [uiMode])
 
   useEffect(() => {
     if (!animating) return
@@ -28,20 +41,22 @@ export function ChannelStep() {
 
   return (
     <div className="space-y-6">
-      <TransmissionAnimation active={sending} delivered={delivered} noisy={noisy} />
+      <div data-tour-target="channel-overview">
+        <TransmissionAnimation active={sending} delivered={delivered} noisy={noisy} />
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
-        <Card>
+        <Card data-tour-target="channel-controls">
           <CardTitle
             icon={<SlidersHorizontal className="size-4" />}
-            title="Channel conditions"
+            title="What happens during transmission"
             hint="Simulate what happens to the file on its way. A clean channel = sending the WAV as an attachment."
           />
           <div className="space-y-5">
-            <Switch checked={channel.quantize16} onChange={(v) => setChannel({ quantize16: v })} label="Save as 16-bit PCM WAV (quantisation)" />
-            <Switch checked={noisy} onChange={(v) => setChannel({ noiseSnrDb: v ? 30 : null })} label="Add white Gaussian noise" />
+            <Switch checked={channel.quantize16} onChange={(v) => setChannel({ quantize16: v })} label="Quantise to 16-bit audio" />
+            <Switch checked={noisy} onChange={(v) => setChannel({ noiseSnrDb: v ? 30 : null })} label="Add transmission noise" />
             <Slider
-              label="Noise level (SNR of channel)"
+              label="Amount of noise"
               value={channel.noiseSnrDb ?? 30}
               min={0}
               max={60}
@@ -50,15 +65,16 @@ export function ChannelStep() {
               onChange={(v) => setChannel({ noiseSnrDb: v })}
               format={(v) => `${v} dB`}
             />
-            <Slider label="Volume change" value={channel.gainDb} min={-20} max={6} step={1} onChange={(v) => setChannel({ gainDb: v })} format={(v) => `${v > 0 ? '+' : ''}${v} dB`} />
-            <Button className="w-full" size="lg" onClick={send} loading={sending} icon={<Send className="size-4" />}>
-              {transmitted ? 'Transmit again' : 'Transmit stego audio'}
+            <p className="-mt-3 text-xs text-slate-500">The SNR value is the signal-to-noise ratio: higher means a cleaner transmission.</p>
+            <Slider label="Change volume during transmission" value={channel.gainDb} min={-20} max={6} step={1} onChange={(v) => setChannel({ gainDb: v })} format={(v) => `${v > 0 ? '+' : ''}${v} dB`} />
+            <Button data-tour-target="channel-action" className="w-full" size="lg" onClick={send} loading={sending} icon={<Send className="size-4" />}>
+              {transmitted ? 'Send again' : 'Transmit stego audio'}
             </Button>
           </div>
         </Card>
 
-        <Card>
-          <CardTitle title="At the receiver" hint="The file that arrived. Nobody listening in hears anything but music." />
+        <Card data-tour-target="channel-metrics">
+          <CardTitle title="Audio received" hint="The file that arrived. Anyone listening should hear only the normal audio." />
           {delivered && transmitted ? (
             <div className="space-y-4">
               <WaveformPlayer samples={transmitted.received.samples} color="cyan" label="received.wav" downloadName="received.wav" height={72} />
@@ -82,9 +98,10 @@ export function ChannelStep() {
 
       <div className="flex justify-end">
         <Button size="lg" onClick={() => goTo(3)} disabled={!delivered} icon={<ArrowRight className="size-5" />}>
-          Go to receiver
+          Recover the secret
         </Button>
       </div>
+      <BeginnerTour open={uiMode === 'beginner' && tourOpen} steps={BEGINNER_CHANNEL_TOUR_STEPS} onClose={() => setTourOpen(false)} />
     </div>
   )
 }

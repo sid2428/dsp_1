@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { AlertTriangle, AudioWaveform, Loader2, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Stepper } from './components/layout/stepper'
+import { WelcomeScreen } from './components/layout/welcome-screen'
 import { ChannelStep } from './steps/channel-step'
 import { EncodeStep } from './steps/encode-step'
 import { OutputStep } from './steps/output-step'
@@ -9,31 +11,40 @@ import { SenderStep } from './steps/sender-step'
 import { useStegoStore } from './store/use-stego-store'
 
 const STEP_INTRO = [
-  { title: 'Sender', text: 'Pick a cover track that everyone may hear, the secret voice message to hide inside it, and a shared key.' },
+  { title: 'Choose your audio', text: 'Choose the normal audio that everyone will hear, then add the secret voice or text you want to hide.' },
   {
-    title: 'Encoding in the frequency domain',
-    text: 'The secret is band-limited, reversed in time, spectrally inverted, shuffled with the key and parked at 16.5–19.9 kHz inside the cover.',
+    title: 'Your secret is now hidden',
+    text: 'The secret voice and optional text have been embedded into the audio. Inspect the DSP steps below to see how it happened.',
   },
-  { title: 'Transmission', text: 'The stego file travels like any other audio file. Optionally add noise or volume changes to test robustness.' },
+  { title: 'Send the audio', text: 'Imagine the hidden audio being sent to another person. Simulate noise, volume changes and quantisation to see whether the secret survives.' },
   {
-    title: 'Receiver — FFT decoding',
-    text: 'A radix-2 FFT (DIT or DIF) moves the received audio to the frequency domain, where the hidden band is cut out and every scrambling step is undone.',
+    title: 'Recover the hidden message',
+    text: 'Use the receiver key to recover the secret from the received audio. Technical decoder settings and visualisations are shown below.',
   },
-  { title: 'Output', text: 'Listen to both outputs: the innocent music, and the voice message only the key holder can recover.' },
+  { title: 'Your secret has been recovered', text: 'Listen to what everyone hears and what the receiver can recover, then review the technical results.' },
 ]
 
 const STEPS = [SenderStep, EncodeStep, ChannelStep, ReceiverStep, OutputStep]
 
 const BUSY_TEXT = {
-  encode: 'Encoding — two-for-one FFTs, FIR filtering, spectral scrambling and three inverse FFTs on ~1M-point spectra…',
-  channel: 'Transmitting — applying channel gain, noise and 16-bit quantisation…',
-  decode: 'Decoding — radix-2 FFT of the received audio, band extraction, unscrambling (also with a wrong key for comparison)…',
+  encode: 'Hiding the secret — applying the FFT, FIR filtering and keyed spectral embedding…',
+  channel: 'Sending the audio — applying channel gain, noise and 16-bit quantisation…',
+  decode: 'Recovering the secret — applying FFT decoding, band extraction and keyed unscrambling…',
 } as const
 
 export default function App() {
-  const { step, error, setError, busy } = useStegoStore()
+  const { step, error, setError, busy, uiMode, setUIMode, goTo } = useStegoStore()
+  const [welcomeOpen, setWelcomeOpen] = useState(true)
   const StepView = STEPS[step]
   const intro = STEP_INTRO[step]
+
+  const selectMode = (mode: 'beginner' | 'dsp') => {
+    setUIMode(mode)
+    goTo(0)
+    setWelcomeOpen(false)
+  }
+
+  if (welcomeOpen) return <WelcomeScreen onSelectMode={selectMode} />
 
   return (
     <div className="bg-grid min-h-screen">
@@ -48,6 +59,32 @@ export default function App() {
               <div className="text-[11px] text-slate-400">Audio-in-audio steganography · FFT band embedding · time reversal</div>
             </div>
           </div>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <div className="text-right text-[10px] leading-tight text-slate-400" aria-live="polite">
+              <div className="font-semibold text-slate-300">{uiMode === 'beginner' ? 'Beginner Mode' : 'DSP Mode'}</div>
+              <div>{uiMode === 'beginner' ? 'Simple view — focus on what to do.' : 'Technical view — see the signal processing details.'}</div>
+            </div>
+            <div className="inline-flex rounded-xl bg-white/5 p-1 ring-1 ring-white/10" role="group" aria-label="Choose application view">
+              <button
+                type="button"
+                aria-pressed={uiMode === 'beginner'}
+                onClick={() => setUIMode('beginner')}
+                className="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:text-white aria-pressed:bg-cyan-400 aria-pressed:text-ink-950"
+              >
+                Beginner Mode
+              </button>
+              <button
+                type="button"
+                aria-pressed={uiMode === 'dsp'}
+                onClick={() => setUIMode('dsp')}
+                className="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:text-white aria-pressed:bg-cyan-400 aria-pressed:text-ink-950"
+              >
+                DSP Mode
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto max-w-7xl px-4 pb-3 sm:px-6">
           <Stepper />
         </div>
         {busy && (
