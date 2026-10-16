@@ -10,6 +10,7 @@
  * answer that, so the verdict below reports what it actually proved.
  */
 import type { AudioClip } from '../audio/load-audio'
+import type { FrameContent } from '../dsp/bit-lane'
 import { peak } from '../dsp/analysis'
 import { MAX_DURATION_S, SAMPLE_RATE } from '../dsp/constants'
 import { computeLayout } from '../dsp/spectral-ops'
@@ -59,28 +60,72 @@ export function checkReceiverKey(key: string): KeyCheck {
   return { error: null, warning: null }
 }
 
-export type Verdict = 'ok' | 'auth-failed' | 'no-payload'
+export type Verdict = 'ok' | 'voice-verified' | 'auth-failed' | 'no-payload'
+
+export type Verification = 'verified' | 'failed' | 'unavailable'
+
+export interface VerdictCopy {
+  tone: 'ok' | 'bad' | 'unsure'
+  /** True only when AES-GCM authenticated the frame — the only state that may be presented as success. */
+  success: boolean
+  verification: Verification
+  title: string
+  detail: string
+  /** What the receiver can try next, most likely fix first. Empty on success. */
+  actions: string[]
+}
 
 /** Plain-language reading of what the decode actually proved, with no reference to sender state. */
-export function recoveryVerdict(status: Verdict): { tone: 'ok' | 'bad' | 'unsure'; title: string; detail: string } {
+export function recoveryVerdict(status: Verdict, content: FrameContent | null = null): VerdictCopy {
   if (status === 'ok') {
     return {
       tone: 'ok',
-      title: 'Key verified — hidden text recovered',
-      detail: 'The text lane synchronised and AES-GCM authenticated it, which proves this key matches the one used to hide the message.',
+      success: true,
+      verification: 'verified',
+      title: content === 'voice+text' ? 'Message recovered and authenticated' : 'Text recovered and authenticated',
+      detail:
+        content === 'voice+text'
+          ? 'AES-GCM authenticated the text, so the key matches the sender’s. This older-format file also carries a voice; the voice band itself cannot be authenticated.'
+          : 'AES-GCM authenticated the text, which proves the key matches the sender’s and the text bits arrived intact.',
+      actions: [],
+    }
+  }
+  if (status === 'voice-verified') {
+    return {
+      tone: 'ok',
+      success: true,
+      verification: 'verified',
+      title: 'Key verified — voice recovered',
+      detail:
+        'The voice frame’s AES-GCM key token authenticated, so the key matches the sender’s. The voice is an analogue signal: its quality cannot be authenticated, only heard.',
+      actions: [],
     }
   }
   if (status === 'auth-failed') {
     return {
       tone: 'bad',
-      title: 'Wrong key, or the file was altered',
-      detail: 'A text lane was found but its authentication tag did not verify. Check the key for typos, and make sure the file was not re-encoded after it was created.',
+      success: false,
+      verification: 'failed',
+      title: 'Unable to authenticate the payload',
+      detail: 'Check the key or verify that the audio has not been damaged. A frame was found, but its AES-GCM tag did not verify, so nothing is shown.',
+      actions: [
+        'Check the key for typos, capital letters and leading or trailing spaces.',
+        'Make sure the file was not re-encoded (MP3, AAC, voice-note apps) or edited after it was created.',
+        'If it went through a noisy channel, ask the sender for the original WAV export.',
+      ],
     }
   }
   return {
     tone: 'unsure',
-    title: 'No text lane synchronised',
+    success: false,
+    verification: 'unavailable',
+    title: 'No hidden frame found',
     detail:
-      'The header never matched. If the sender included a text message, this key is wrong or this is not the stego file. If they sent voice only, that is expected — play the recovered audio below to check it.',
+      'No frame synchronised with this key. Either the key is wrong, this is not a SpectraHide file, or the top of the spectrum was removed. Original-format files that hid only a voice carry no frame at all — for those, key verification is unavailable; listen to the recovered audio to judge.',
+    actions: [
+      'Re-type the key exactly as the sender shared it.',
+      'Use the WAV file exactly as exported — lossy formats (MP3, AAC, OGG) cut the 16–22 kHz bands that carry the message.',
+      'Avoid trimming, resampling or editing the file before decoding.',
+    ],
   }
 }

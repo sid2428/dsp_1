@@ -275,13 +275,17 @@ export interface ButterflyTrace {
   butterflies: ButterflyEvent[][]
 }
 
-/** Runs the real FFT on a short signal and records every stage + butterfly for visualization. */
-export function traceFft(input: ArrayLike<number>, kind: FftKind): ButterflyTrace {
+/**
+ * Runs the real FFT on a short signal and records every stage + butterfly for visualization.
+ * `inputIm` gives a complex input, e.g. the encoder's two-for-one z = voice + j·cover.
+ */
+export function traceFft(input: ArrayLike<number>, kind: FftKind, inputIm?: ArrayLike<number>): ButterflyTrace {
   const n = input.length
   if (!isPowerOfTwo(n) || n < 2) throw new Error('traceFft: length must be a power of two >= 2')
+  if (inputIm && inputIm.length !== n) throw new Error('traceFft: real and imaginary inputs must have the same length')
   const bits = log2Int(n)
   const re = Float64Array.from(input)
-  const im = new Float64Array(n)
+  const im = inputIm ? Float64Array.from(inputIm) : new Float64Array(n)
   const columns: ButterflyTrace['columns'] = []
   const butterflies: ButterflyEvent[][] = Array.from({ length: bits }, () => [])
   fft(re, im, {

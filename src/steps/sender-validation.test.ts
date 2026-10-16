@@ -12,7 +12,8 @@ function clip(seconds: number, { silent = false, name = 'clip.wav' } = {}): Audi
   return { name, samples, duration: samples.length / SAMPLE_RATE, truncated: false }
 }
 
-const base = { cover: clip(8), secret: clip(3), key: 'dsp-cie-2026', hiddenText: '', beginner: false }
+const base = { cover: clip(8), secret: clip(3), key: 'dsp-cie-2026', hiddenText: '', mode: 'voice' as const, beginner: false }
+const textBase = { ...base, mode: 'text' as const, hiddenText: 'hello' }
 const ids = (input: Parameters<typeof validateSender>[0]) => validateSender(input).issues.map((i) => i.id)
 
 describe('capacity', () => {
@@ -61,23 +62,36 @@ describe('capacity', () => {
 })
 
 describe('validateSender', () => {
-  it('passes with a cover, a secret and a key', () => {
+  it('passes with a cover, a voice and a key (voice mode)', () => {
     const status = validateSender(base)
     expect(status.ready).toBe(true)
     expect(status.blocking).toHaveLength(0)
   })
 
-  it('blocks on a missing cover, secret or key', () => {
+  it('blocks on a missing cover, payload or key', () => {
     expect(ids({ ...base, cover: null })).toContain('cover-missing')
     expect(ids({ ...base, secret: null })).toContain('secret-missing')
+    expect(ids({ ...textBase, hiddenText: '' })).toContain('text-empty')
     expect(ids({ ...base, key: '' })).toContain('key-missing')
     expect(ids({ ...base, key: '   ' })).toContain('key-missing')
     expect(validateSender({ ...base, key: '   ' }).ready).toBe(false)
   })
 
-  it('requires the secret voice in beginner mode too, since encode() does', () => {
-    expect(validateSender({ ...base, secret: null, beginner: true }).ready).toBe(false)
-    expect(validateSender({ ...base, secret: null, beginner: true }).blocking.map((i) => i.id)).toContain('secret-missing')
+  it('validates only the selected payload', () => {
+    // text mode ignores a missing or silent voice; voice mode ignores the text box
+    expect(validateSender({ ...textBase, secret: null }).ready).toBe(true)
+    expect(validateSender({ ...textBase, secret: clip(3, { silent: true }) }).ready).toBe(true)
+    expect(validateSender({ ...base, hiddenText: 'x'.repeat(5000) }).ready).toBe(true)
+    expect(validateSender({ ...base, secret: null, hiddenText: 'hello' }).ready).toBe(false)
+  })
+
+  it('treats whitespace-only text as empty, as the encoder does', () => {
+    expect(ids({ ...textBase, hiddenText: '   \n ' })).toContain('text-empty')
+  })
+
+  it('warns in voice mode when the cover cannot hold the key-verification token', () => {
+    expect(validateSender({ ...base, cover: clip(0.5), secret: clip(0.4) }).warnings.map((i) => i.id)).toContain('voice-no-token')
+    expect(validateSender(base).warnings.map((i) => i.id)).not.toContain('voice-no-token')
   })
 
   it('blocks silent audio the way the encoder does', () => {
@@ -88,7 +102,7 @@ describe('validateSender', () => {
   it('blocks hidden text that will not fit', () => {
     const cover = clip(8)
     const limit = coverTextLimit(cover).limit!
-    const status = validateSender({ ...base, cover, hiddenText: 'x'.repeat(limit + 20) })
+    const status = validateSender({ ...textBase, cover, hiddenText: 'x'.repeat(limit + 20) })
     expect(status.ready).toBe(false)
     expect(status.blocking.map((i) => i.id)).toContain('text-too-long')
     expect(status.blocking[0].detail).toMatch(/20 bytes/)
@@ -96,7 +110,7 @@ describe('validateSender', () => {
 
   it('blocks text on a cover with no lane capacity, but allows an empty box', () => {
     const tiny = clip(0.2)
-    expect(ids({ ...base, cover: tiny, hiddenText: 'hi' })).toContain('text-no-capacity')
+    expect(ids({ ...textBase, cover: tiny, hiddenText: 'hi' })).toContain('text-no-capacity')
     expect(ids({ ...base, cover: tiny, hiddenText: '' })).not.toContain('text-no-capacity')
   })
 
@@ -114,7 +128,7 @@ describe('validateSender', () => {
   it('warns when the text nearly fills the lane', () => {
     const cover = clip(8)
     const limit = coverTextLimit(cover).limit!
-    const status = validateSender({ ...base, cover, hiddenText: 'x'.repeat(limit) })
+    const status = validateSender({ ...textBase, cover, hiddenText: 'x'.repeat(limit) })
     expect(status.ready).toBe(true)
     expect(status.warnings.map((i) => i.id)).toContain('text-near-limit')
   })
