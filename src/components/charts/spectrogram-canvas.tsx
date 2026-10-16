@@ -1,4 +1,5 @@
-import * as d3 from 'd3'
+import { rgb } from 'd3-color'
+import { interpolateRgbBasis } from 'd3-interpolate'
 import { useEffect, useMemo, useRef } from 'react'
 import type { Spectrogram } from '../../dsp/analysis'
 
@@ -13,7 +14,9 @@ interface SpectrogramProps {
   marks?: { hz: number; label: string; color: string }[]
 }
 
-const LUT = Array.from({ length: 256 }, (_, i) => d3.rgb(d3.interpolateMagma(i / 255)))
+/** Dark navy → teal → pale green, matching the interface palette; perceptually monotonic in lightness. */
+const RAMP = interpolateRgbBasis(['#050f19', '#0d2f4a', '#145c78', '#1a9a9a', '#20d6c7', '#8fe3b0', '#f2f7d8'])
+const LUT = Array.from({ length: 256 }, (_, i) => rgb(RAMP(i / 255)))
 
 export function specMax(spec: Spectrogram): number {
   let m = -Infinity
@@ -53,31 +56,31 @@ export function SpectrogramCanvas({ spec, title, height = 180, dbMax, dbRange = 
 
   return (
     <div>
-      {title && <div className="mb-1.5 text-xs font-medium text-slate-300">{title}</div>}
+      {title && <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.12em] text-fg-3">{title}</div>}
       <div className="flex gap-1.5">
-        <div className="relative w-7 shrink-0 font-mono text-[9px] text-slate-500" style={{ height }}>
+        <div className="relative w-7 shrink-0 font-mono text-[10px] text-fg-3" style={{ height }}>
           {ticks.map((t) => (
             <span key={t} className="absolute right-0 -translate-y-1/2" style={{ top: `${(1 - t / nyquist) * 100}%` }}>
               {t / 1000}k
             </span>
           ))}
         </div>
-        <div className="relative grow overflow-hidden rounded-lg ring-1 ring-white/10" style={{ height }}>
-          <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+        <div className="relative grow overflow-hidden border border-line" style={{ height }}>
+          <canvas ref={canvasRef} role="img" aria-label={`Spectrogram, 0 to ${(nyquist / 1000).toFixed(1)} kHz over ${spec.duration.toFixed(1)} s`} className="absolute inset-0 h-full w-full" />
           {marks.map((m) => (
             <div
               key={m.label}
               className="absolute inset-x-0 border-t border-dashed"
               style={{ top: `${(1 - m.hz / nyquist) * 100}%`, borderColor: m.color }}
             >
-              <span className="absolute right-1 -top-4 rounded bg-black/60 px-1 text-[9px] font-semibold" style={{ color: m.color }}>
+              <span className="absolute right-1 -top-4 bg-bg/80 px-1 font-mono text-[10px]" style={{ color: m.color }}>
                 {m.label}
               </span>
             </div>
           ))}
         </div>
       </div>
-      <div className="ml-8 mt-1 flex justify-between font-mono text-[9px] text-slate-500">
+      <div className="ml-8 mt-1 flex justify-between font-mono text-[10px] text-fg-3">
         <span>0 s</span>
         <span>{spec.duration.toFixed(1)} s</span>
       </div>

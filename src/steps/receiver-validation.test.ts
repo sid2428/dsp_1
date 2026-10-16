@@ -101,19 +101,29 @@ describe('checkReceiverKey', () => {
 })
 
 describe('recoveryVerdict', () => {
-  it('only claims the key is verified when GCM authenticated', () => {
-    expect(recoveryVerdict('ok').tone).toBe('ok')
-    expect(recoveryVerdict('ok').title).toMatch(/verified/i)
+  it('only reports success when AES-GCM authenticated', () => {
+    expect(recoveryVerdict('ok', 'text')).toMatchObject({ success: true, verification: 'verified', tone: 'ok' })
+    expect(recoveryVerdict('voice-verified', 'voice')).toMatchObject({ success: true, verification: 'verified' })
+    expect(recoveryVerdict('auth-failed').success).toBe(false)
+    expect(recoveryVerdict('no-payload').success).toBe(false)
   })
 
-  it('blames the key or the file when the tag fails', () => {
-    expect(recoveryVerdict('auth-failed').tone).toBe('bad')
-    expect(recoveryVerdict('auth-failed').detail).toMatch(/typos|altered|re-encoded/i)
+  it('treats a failed tag as a failed decode without blaming only the key', () => {
+    const v = recoveryVerdict('auth-failed')
+    expect(v.title).toBe('Unable to authenticate the payload')
+    expect(v.detail).toMatch(/check the key or verify that the audio has not been damaged/i)
+    expect(v.verification).toBe('failed')
+    expect(v.actions.join(' ')).toMatch(/typos|re-encoded/i)
   })
 
-  it('stays non-committal when no lane synced, since voice-only sends look the same', () => {
+  it('says verification is unavailable for frameless (original voice-only) files', () => {
     const v = recoveryVerdict('no-payload')
-    expect(v.tone).toBe('unsure')
-    expect(v.detail).toMatch(/voice only/i)
+    expect(v.verification).toBe('unavailable')
+    expect(v.detail).toMatch(/verification is unavailable/i)
+    expect(v.actions.length).toBeGreaterThan(0)
+  })
+
+  it('does not claim the analogue voice is authenticated', () => {
+    expect(recoveryVerdict('voice-verified', 'voice').detail).toMatch(/cannot be authenticated/i)
   })
 })

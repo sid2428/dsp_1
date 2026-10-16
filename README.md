@@ -1,8 +1,9 @@
-# SpectraHide — Audio-in-Audio Steganography with FFT
+# SpectraHide — Audio Steganography with FFT
 
-A website that hides a **secret voice message** and an **encrypted text message** inside a music track and
-recovers both at the receiver using a **radix-2 FFT (DIT or DIF)**. Every step is visualised: block diagrams, spectra, spectrograms, an animated
-**butterfly diagram** of the decoder's FFT, and audio players for both outputs.
+Hide an **encrypted text message**, a **secret voice recording**, or both inside an ordinary music track, and recover
+them with a **radix-2 FFT (DIT or DIF)**. Every stage is drawn from the real data: block diagrams lit by the worker's
+own progress reports, calibrated power spectra, spectrograms, an animated butterfly diagram of the decoder's FFT,
+and players for every intermediate signal.
 
 All signal processing is written from scratch in TypeScript and runs in the browser (Web Worker). No server.
 
@@ -11,21 +12,39 @@ All signal processing is written from scratch in TypeScript and runs in the brow
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 48 unit tests for the DSP core
-npm run build      # production build in dist/ (serve with: npm run preview)
+npm test           # unit tests for the DSP core, validation and frame formats
+npm run build      # type-check + production build in dist/ (serve with: npm run preview)
 ```
 
-## The flow (5 steps)
+## The flow (5 stages)
 
-| Step | What happens |
+| Stage | What happens |
 |---|---|
-| 1 · Sender | Load cover music + secret voice (upload, record from mic, or demo clips), choose a key, optionally type a hidden text |
-| 2 · Encode | Animated encoder block diagram; click any block to hear / see the signal there |
-| 3 · Channel | Animated transmission; optional noise, volume change, 16-bit WAV quantisation |
-| 4 · Receiver | FFT decoding: animated DIT/DIF butterflies on real samples + decoder block diagram |
-| 5 · Output | Play the stego audio (what everyone hears) and the recovered secret (what the key holder hears); decrypted hidden text with BER, constellation and bit grid; metrics; wrong-key demo |
+| 01 · Sender | Cover audio + **one** payload — Text **or** Voice — + key. Real metadata, byte-exact UTF-8 capacity, live mic level, dictation where the browser offers speech recognition |
+| 02 · Encode | Runs automatically in a Web Worker; blocks light as each stage really finishes (measured times). Cover-vs-stego spectrum with hover readout, the encoder's own FFT as an interactive butterfly diagram, and an optional block-by-block walkthrough |
+| 03 · Transfer | The original sender → channel → receiver animation. Download `stego.wav`, or run the channel simulator (Clean / Noisy / Low-pass presets, or custom), compare cover / TX / RX, and run a stress test that decodes each preset for real |
+| 04 · Receiver | Independent: upload a file → type the key → decode. Nothing is taken from the sender. Decoding can be cancelled. Decoder walkthrough + butterfly explorer |
+| 05 · Results | Only AES-GCM-verified output is presented as recovered; copy / .txt for text, playback / .wav for voice; failure guidance; Technical Details (constellation, bits, wrong-key control, sender-vs-receiver metrics only when the file is provably from this session); JSON report (never contains the key) |
 
-A receiver on another computer can skip straight to step 4 with **"Received a stego file? Decode it directly"**.
+The Receiver works on its own, so a person on another computer can open it directly and decode a downloaded file.
+
+## Frame format and verification
+
+The text lane starts with a 24-bit header: a sync byte and a 16-bit payload length. The payload is always
+salt (16) ‖ IV (12) ‖ AES-256-GCM ciphertext ‖ tag (16), keyed with PBKDF2-SHA256.
+
+| Sync byte | Payload | Receiver can verify |
+|---|---|---|
+| `0xA5` | voice + text (original format) | the key and the text |
+| `0xA6` | text | the key and the text |
+| `0xA7` | voice; the frame holds AES-GCM of an empty plaintext | the key (the analogue voice itself cannot be authenticated) |
+| none | original-format voice-only files | nothing — reported as “verification unavailable” |
+
+## Animation
+
+The sender → channel → receiver strip (`src/components/channel/transmission-animation.tsx`) is the original from
+commit `7c5ba4f`: PCM packets, noise particles, endpoint light-up and the 2.2 s minimum transmission time are kept;
+phases for encoding, decoding, verified and failed were added, all driven by real state.
 
 ## Signal chain
 
@@ -73,7 +92,8 @@ DSP ideas used (all in `src/dsp/`):
 ## Limitations (good to state in the viva)
 
 - The hidden band is **visible on a spectrogram** at 16.5–19.9 kHz, even though it is hard to hear.
-- Lossy compression (MP3, WhatsApp voice notes) usually removes content above ~16 kHz, so the stego file must be sent as **WAV**.
+- Lossy compression (MP3, WhatsApp voice notes) usually removes content above ~16 kHz, so the stego file must be sent as **WAV**. Uploads in other formats work only if the browser can decode them.
+- Dictation uses the browser's speech recognition; Chrome sends that microphone audio to Google's speech service.
 - Security comes from the key-driven permutation; time reversal and spectral inversion alone are keyless scrambles.
 
 ## Project structure
@@ -83,12 +103,11 @@ src/
   dsp/           FFT, FIR, spectral ops, encoder/decoder, metrics, WAV I/O (+ *.test.ts)
   worker/        Web Worker running the DSP off the UI thread
   audio/         decoding uploads, mic recording, WAV download
-  pipeline/      block-diagram definitions and theory text for every stage
-  components/    charts (D3/canvas), React Flow pipeline, butterfly visualiser, players (wavesurfer.js)
+  pipeline/      encoder/decoder block definitions; walkthrough text built from each real result
+  components/    charts (D3/canvas), SVG signal diagrams + walkthrough, butterfly visualiser, players (wavesurfer.js)
   steps/         the five screens
   store/         Zustand app state
 public/samples/  demo cover (synthesised music) and secret (Windows TTS voice)
 ```
 
-Stack: Vite · React 19 · TypeScript (strict) · Tailwind CSS 4 · Framer Motion (`motion`) · React Flow ·
-wavesurfer.js · D3 · Zustand · Radix UI · Vitest.
+Stack: Vite · React 19 · TypeScript (strict) · Tailwind CSS 4 · Motion for React · wavesurfer.js · D3 · Zustand · Radix UI · Vitest.

@@ -1,5 +1,5 @@
 import { MAX_DURATION_S, SAMPLE_RATE } from '../dsp/constants'
-import { encodeWav16 } from '../dsp/wav'
+import { encodeWav16, encodeWavFloat32 } from '../dsp/wav'
 import { normalizePeak } from '../dsp/analysis'
 
 export interface AudioClip {
@@ -75,6 +75,40 @@ function readWavHeader(buf: ArrayBuffer): { sampleRate: number; channels: number
   return null
 }
 
+const MP3_RATES: Record<number, number[]> = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] }
+
+/** Sample rate of the first MPEG audio frame, after any ID3v2 tag. */
+function readMp3Rate(b: Uint8Array): number | null {
+  let i = 0
+  if (b.length > 10 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) {
+    i = 10 + ((b[6] << 21) | (b[7] << 14) | (b[8] << 7) | b[9]) + (b[5] & 0x10 ? 10 : 0)
+  }
+  for (const end = Math.min(b.length - 4, i + 64 * 1024); i < end; i++) {
+    if (b[i] !== 0xff || (b[i + 1] & 0xe0) !== 0xe0) continue
+    const version = (b[i + 1] >> 3) & 3
+    const layer = (b[i + 1] >> 1) & 3
+    const rateIdx = (b[i + 2] >> 2) & 3
+    const bitrateIdx = b[i + 2] >> 4
+    if (version === 1 || layer === 0 || rateIdx === 3 || bitrateIdx === 15) continue
+    return MP3_RATES[version][rateIdx]
+  }
+  return null
+}
+
+/** The rate stored in the container, for the formats whose headers are simple to read. */
+function readSourceRate(buf: ArrayBuffer): number | null {
+  const wav = readWavHeader(buf)
+  if (wav) return wav.sampleRate
+  const b = new Uint8Array(buf, 0, Math.min(buf.byteLength, 128 * 1024))
+  const ascii = (off: number, len: number) => String.fromCharCode(...b.subarray(off, off + len))
+  if (b.length > 22 && ascii(0, 4) === 'fLaC') return (b[18] << 12) | (b[19] << 4) | (b[20] >> 4)
+  if (b.length > 44 && ascii(0, 4) === 'OggS') {
+    if (ascii(29, 6) === 'vorbis') return new DataView(buf).getUint32(40, true)
+    if (ascii(28, 8) === 'OpusHead') return 48000 // Opus always codes at 48 kHz
+  }
+  return readMp3Rate(b)
+}
+
 /** Decodes any browser-supported audio (wav/mp3/ogg/webm...) to mono at SAMPLE_RATE. */
 export async function decodeToClip(data: ArrayBuffer, name: string, origin: { kind: ClipSourceInfo['kind']; mimeType?: string } = { kind: 'file' }): Promise<AudioClip> {
   const bytes = data.byteLength
@@ -83,7 +117,7 @@ export async function decodeToClip(data: ArrayBuffer, name: string, origin: { ki
     throw new Error(`"${name}" is ${(bytes / 1024 / 1024).toFixed(0)} MB. Use a file under ${MAX_FILE_BYTES / 1024 / 1024} MB — only the first ${MAX_DURATION_S} s is used anyway.`)
   }
   const format = audioFormatLabel(origin.mimeType ?? '', name)
-  const header = readWavHeader(data)
+  const sourceRate = readSourceRate(data)
   const ctx = new OfflineAudioContext(1, 1, SAMPLE_RATE)
   let buffer: AudioBuffer
   try {
@@ -110,7 +144,7 @@ export async function decodeToClip(data: ArrayBuffer, name: string, origin: { ki
       bytes,
       format,
       channels: buffer.numberOfChannels,
-      sourceSampleRate: header?.sampleRate ?? null,
+      sourceSampleRate: sourceRate,
     },
   }
 }
@@ -130,34 +164,109 @@ export function clipToWavBlob(samples: Float32Array, normalize = false): Blob {
   return new Blob([encodeWav16(data, SAMPLE_RATE)], { type: 'audio/wav' })
 }
 
-export function downloadWav(samples: Float32Array, filename: string): void {
-  const url = URL.createObjectURL(clipToWavBlob(samples))
+export type WavFormat = 'pcm16' | 'float32'
+
+/** The exact bytes of a mono WAV file at SAMPLE_RATE, as it would be saved or sent. */
+export function wavBytes(samples: Float32Array, format: WavFormat = 'pcm16'): ArrayBuffer {
+  return format === 'float32' ? encodeWavFloat32(samples, SAMPLE_RATE) : encodeWav16(samples, SAMPLE_RATE)
+}
+
+/** Saves a blob through a temporary link; the object URL is released once the download has started. */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
   a.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 4000)
 }
 
-/** Microphone recorder built on MediaRecorder. */
+export function downloadWav(samples: Float32Array, filename: string, format: WavFormat = 'pcm16'): void {
+  downloadBlob(new Blob([wavBytes(samples, format)], { type: 'audio/wav' }), filename)
+}
+
+export function downloadText(text: string, filename: string): void {
+  downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename)
+}
+
+/** Microphone recorder built on MediaRecorder, with a live input meter from an AnalyserNode. */
 export class MicRecorder {
   private recorder: MediaRecorder | null = null
   private chunks: Blob[] = []
   private stream: MediaStream | null = null
+  private ctx: AudioContext | null = null
+  private analyser: AnalyserNode | null = null
+  private buf: Float32Array<ArrayBuffer> | null = null
+  startedAt = 0
 
   async start(): Promise<void> {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone recording is not supported in this browser')
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone recording is not supported in this browser.')
+    if (typeof MediaRecorder === 'undefined') throw new Error('This browser cannot record audio (MediaRecorder is missing).')
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      throw new Error('Microphone permission was denied')
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : ''
+      throw new Error(
+        name === 'NotFoundError'
+          ? 'No microphone was found.'
+          : name === 'NotReadableError'
+            ? 'The microphone is in use by another application.'
+            : 'Microphone permission was denied. Allow it in the browser’s site settings to record.',
+      )
     }
     this.chunks = []
     this.recorder = new MediaRecorder(this.stream)
     this.recorder.ondataavailable = (e) => {
       if (e.data.size > 0) this.chunks.push(e.data)
     }
+    try {
+      this.ctx = new AudioContext()
+      this.analyser = this.ctx.createAnalyser()
+      this.analyser.fftSize = 1024
+      this.buf = new Float32Array(this.analyser.fftSize)
+      this.ctx.createMediaStreamSource(this.stream).connect(this.analyser)
+    } catch {
+      this.ctx = null
+      this.analyser = null
+    }
     this.recorder.start()
+    this.startedAt = performance.now()
+  }
+
+  /** Current input RMS (0–1) of the live microphone, or 0 when no meter is available. */
+  level(): number {
+    if (!this.analyser || !this.buf) return 0
+    this.analyser.getFloatTimeDomainData(this.buf)
+    let e = 0
+    for (let i = 0; i < this.buf.length; i++) e += this.buf[i] * this.buf[i]
+    return Math.sqrt(e / this.buf.length)
+  }
+
+  private release(): void {
+    this.stream?.getTracks().forEach((t) => t.stop())
+    this.stream = null
+    this.recorder = null
+    this.analyser = null
+    this.ctx?.close().catch(() => undefined)
+    this.ctx = null
+  }
+
+  /** Stops without decoding anything (used when the recording is abandoned). */
+  discard(): void {
+    const rec = this.recorder
+    if (rec) {
+      rec.onstop = null
+      try {
+        rec.stop()
+      } catch {
+        /* already stopped */
+      }
+    }
+    this.chunks = []
+    this.release()
   }
 
   stop(): Promise<AudioClip> {
@@ -165,11 +274,10 @@ export class MicRecorder {
     if (!rec) return Promise.reject(new Error('Recorder is not running'))
     return new Promise((resolve, reject) => {
       rec.onstop = async () => {
-        this.stream?.getTracks().forEach((t) => t.stop())
-        this.stream = null
-        this.recorder = null
+        this.release()
         try {
           const blob = new Blob(this.chunks, { type: rec.mimeType })
+          this.chunks = []
           resolve(await decodeToClip(await blob.arrayBuffer(), 'Microphone recording', { kind: 'mic', mimeType: rec.mimeType }))
         } catch (e) {
           reject(e instanceof Error ? e : new Error(String(e)))

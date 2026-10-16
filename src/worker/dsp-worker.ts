@@ -1,24 +1,33 @@
 /// <reference lib="webworker" />
-import { correlation, energy, gainMatchedSnrDb, segmentalSnrDb, snrDb, spectrogram, welchPsd } from '../dsp/analysis'
-import { bitErrorRate, computeLaneLayout, frameBits, payloadCapacityBytes, type LaneReadout } from '../dsp/bit-lane'
+import { bandSnrDb, correlation, energy, gainMatchedSnrDb, segmentalSnrDb, snrDb, spectrogram, welchPsd } from '../dsp/analysis'
+import { bitErrorRate, computeLaneLayout, frameBits, payloadCapacityBytes, type FrameContent, type LaneReadout } from '../dsp/bit-lane'
 import { applyChannel } from '../dsp/channel'
 import { CRYPTO_OVERHEAD, decryptText, encryptText } from '../dsp/crypto'
 import { gaussianNoise } from '../dsp/prng'
 import { frequencyResponse } from '../dsp/fir'
+import { computeLayout } from '../dsp/spectral-ops'
 import { decode, encode, fftSizeFor } from '../dsp/stego'
 import type {
   ChannelOutput,
+  CompareOutput,
   DecodeOutput,
+  DecodeStep,
   EncodeOutput,
-  RecoveryMetrics,
+  EncodeStep,
+  StageTiming,
   StageView,
+  StressResult,
   TextDecodeInfo,
   TextLaneInfo,
   WorkerRequest,
   WorkerResponse,
+  WorkerResult,
 } from './protocol'
 
 declare const self: DedicatedWorkerGlobalScope
+
+/** Correlation with the session's stego above which a received file is treated as derived from it. */
+const LINK_CORRELATION = 0.5
 
 function view(samples: Float32Array, sampleRate: number): StageView {
   return { samples, psd: welchPsd(samples, sampleRate, 2048, 0, 96), spec: spectrogram(samples, sampleRate, 1024, 300) }
@@ -30,25 +39,20 @@ function views<K extends string>(stages: Record<K, Float32Array>, sampleRate: nu
   return out
 }
 
-function recoveryMetrics(reference: Float32Array | null, recovered: Float32Array): RecoveryMetrics | null {
-  if (!reference) return null
-  return {
-    snrDb: gainMatchedSnrDb(reference, recovered),
-    segSnrDb: segmentalSnrDb(reference, recovered),
-    correlation: correlation(reference, recovered),
-  }
-}
-
-/** Encrypts the text and frames it as bits for the lane of a clip of this length. */
-async function prepareText(text: string, key: string, length: number, sampleRate: number): Promise<TextLaneInfo | null> {
-  if (text.trim().length === 0) return null
+/** Encrypts the text (if any) and frames it as bits for the lane of a clip of this length. */
+async function prepareText(text: string, key: string, hasVoice: boolean, length: number, sampleRate: number): Promise<TextLaneInfo | null> {
   const layout = computeLaneLayout(fftSizeFor(length), sampleRate)
-  const cipher = await encryptText(text, key)
-  const bits = frameBits(cipher, layout)
+  const hasText = text.trim().length > 0
+  const content: FrameContent = hasText ? (hasVoice ? 'voice+text' : 'text') : 'voice'
+  // a voice frame carries AES-GCM of an empty plaintext: a key token the receiver can authenticate
+  const cipher = await encryptText(hasText ? text : '', key)
+  if (!hasText && cipher.length > payloadCapacityBytes(layout)) return null // cover too short: verification unavailable
+  const bits = frameBits(cipher, layout, content)
   return {
-    plaintext: text,
+    plaintext: hasText ? text : '',
     cipher,
     bits,
+    content,
     capacityBytes: payloadCapacityBytes(layout) - CRYPTO_OVERHEAD,
     usedBins: bits.length * layout.chipsPerBit,
     laneBins: layout.width,
@@ -66,13 +70,15 @@ function thin(x: Float32Array, max = 1500): Float32Array {
   return out
 }
 
-/** Despread symbols -> decrypted text, BER and a normalised constellation. */
-async function readText(lane: LaneReadout, key: string, referenceBits: Uint8Array | null): Promise<TextDecodeInfo> {
+/** Despread symbols -> decrypted text and a normalised constellation. Uses only the lane and the key. */
+async function readText(lane: LaneReadout, key: string): Promise<TextDecodeInfo> {
   let status: TextDecodeInfo['status'] = lane.status
   let text: string | null = null
   if (lane.status === 'ok' && lane.payload) {
     try {
-      text = await decryptText(lane.payload, key)
+      const plain = await decryptText(lane.payload, key)
+      if (lane.content === 'voice') status = 'voice-verified'
+      else text = plain
     } catch {
       status = 'auth-failed'
     }
@@ -83,10 +89,10 @@ async function readText(lane: LaneReadout, key: string, referenceBits: Uint8Arra
   return {
     status,
     text,
+    content: lane.content,
     bits: lane.bits,
     softRe: thin(lane.softRe.map((v) => v / scale)),
     softIm: thin(lane.softIm.map((v) => v / scale)),
-    ber: referenceBits ? bitErrorRate(referenceBits, lane.bits) : null,
     headerLength: lane.headerLength,
   }
 }
@@ -117,18 +123,24 @@ function warmup(): null {
   return null
 }
 
-async function handle(req: WorkerRequest): Promise<EncodeOutput | ChannelOutput | DecodeOutput | null> {
+async function handle(req: WorkerRequest, report: (t: StageTiming) => void): Promise<WorkerResult> {
   const t0 = performance.now()
   switch (req.type) {
     case 'warmup':
       return warmup()
     case 'encode': {
-      const text = await prepareText(req.text, req.params.key, req.cover.length, req.sampleRate)
-      const r = encode(req.cover, req.secret, req.sampleRate, { ...req.params, textBits: text?.bits ?? null })
-      const dspMs = performance.now() - t0
-      const stego = r.stages.stego
-      const hidden = r.stages['secret-shifted']
+      const log: StageTiming<EncodeStep>[] = []
+      const step = (stage: EncodeStep, ms: number) => {
+        log.push({ stage, ms })
+        report({ stage, ms })
+      }
+      const text = await prepareText(req.text, req.params.key, req.secret !== null, req.cover.length, req.sampleRate)
+      step('aes', performance.now() - t0)
+      const r = encode(req.cover, req.secret, req.sampleRate, { ...req.params, textBits: text?.bits ?? null, onProgress: step })
+      const ta = performance.now()
       const stages = views(r.stages, req.sampleRate)
+      const firResponse = frequencyResponse(r.fir, req.sampleRate, 600)
+      step('analysis', performance.now() - ta)
       return {
         stages,
         layout: r.layout,
@@ -136,26 +148,46 @@ async function handle(req: WorkerRequest): Promise<EncodeOutput | ChannelOutput 
         gain: r.gain,
         clipScale: r.clipScale,
         secretTruncated: r.secretTruncated,
-        firResponse: frequencyResponse(r.fir, req.sampleRate, 600),
-        metrics: {
-          coverSnrDb: gainMatchedSnrDb(req.cover, stego),
-          hiddenLevelDb: 10 * Math.log10(energy(hidden) / Math.max(energy(stego), 1e-20)),
-        },
+        hasVoice: r.hasVoice,
+        firResponse,
+        fftSize: r.layout.n,
         totalMs: performance.now() - t0,
-        timings: { dspMs, analysisMs: performance.now() - t0 - dspMs },
+        log,
         text,
-      }
+      } satisfies EncodeOutput
     }
     case 'channel': {
-      const received = applyChannel(req.stego, req.params)
-      return { received: view(received, req.sampleRate), channelSnrDb: snrDb(req.stego, received) }
+      const received = applyChannel(req.stego, req.params, req.sampleRate)
+      // the two hidden bands exactly as the decoder will locate them
+      const n = fftSizeFor(req.stego.length)
+      const bin = req.sampleRate / n
+      const layout = computeLaneLayout(n, req.sampleRate)
+      const vl = computeLayout(n, req.sampleRate)
+      return {
+        received: view(received, req.sampleRate),
+        channelSnrDb: snrDb(req.stego, received),
+        voiceBandSnrDb: bandSnrDb(req.stego, received, req.sampleRate, vl.carrierLow * bin, (vl.carrierLow + vl.width) * bin),
+        textLaneSnrDb: bandSnrDb(req.stego, received, req.sampleRate, layout.start * bin, (layout.start + layout.width) * bin),
+        params: req.params,
+      } satisfies ChannelOutput
     }
     case 'decode': {
+      const log: StageTiming<DecodeStep>[] = []
+      const step = (stage: DecodeStep, ms: number) => {
+        log.push({ stage, ms })
+        report({ stage, ms })
+      }
       const wrongKeyStr = `${req.params.key}?`
-      const r = decode(req.received, req.sampleRate, { ...req.params, wrongKey: wrongKeyStr })
-      const wrongRecovered = r.wrongKeyRecovered ?? new Float32Array(req.received.length)
-      const dspMs = performance.now() - t0
+      const r = decode(req.received, req.sampleRate, { ...req.params, wrongKey: wrongKeyStr, onProgress: step })
+      const td = performance.now()
+      const text = await readText(r.lane, req.params.key)
+      const wrongText = await readText(r.wrongLane!, wrongKeyStr)
+      step('decrypt', performance.now() - td)
+      const ta = performance.now()
       const stages = views(r.stages, req.sampleRate)
+      const wrongRecovered = view(r.wrongKeyRecovered ?? new Float32Array(req.received.length), req.sampleRate)
+      const carrierLevelDb = 10 * Math.log10(Math.max(energy(r.stages['band-extracted']), 1e-30) / Math.max(energy(req.received), 1e-30))
+      step('analysis', performance.now() - ta)
       return {
         stages,
         layout: r.layout,
@@ -165,24 +197,63 @@ async function handle(req: WorkerRequest): Promise<EncodeOutput | ChannelOutput 
         fftStages: r.fftStages,
         butterflyCount: r.butterflyCount,
         totalMs: performance.now() - t0,
-        timings: { dspMs, analysisMs: performance.now() - t0 - dspMs },
-        metrics: recoveryMetrics(req.reference, r.stages.recovered),
-        text: await readText(r.lane, req.params.key, req.referenceBits),
-        wrongKey: {
-          key: wrongKeyStr,
-          recovered: view(wrongRecovered, req.sampleRate),
-          metrics: recoveryMetrics(req.reference, wrongRecovered),
-          text: r.wrongLane ? await readText(r.wrongLane, wrongKeyStr, req.referenceBits) : null,
-        },
+        log,
+        carrierLevelDb,
+        laneLowHz: r.laneLayout.start * r.laneLayout.binHz,
+        laneHighHz: (r.laneLayout.start + r.laneLayout.width) * r.laneLayout.binHz,
+        text,
+        wrongKey: { key: wrongKeyStr, recovered: wrongRecovered, text: wrongText },
+      } satisfies DecodeOutput
+    }
+    case 'stress': {
+      const n = fftSizeFor(req.stego.length)
+      const bin = req.sampleRate / n
+      const lane = computeLaneLayout(n, req.sampleRate)
+      const vl = computeLayout(n, req.sampleRate)
+      const out: StressResult[] = []
+      for (const sc of req.scenarios) {
+        const rx = applyChannel(req.stego, sc.params, req.sampleRate)
+        const r = decode(rx, req.sampleRate, { key: req.key, fftKind: 'dit' })
+        const t = await readText(r.lane, req.key)
+        out.push({
+          id: sc.id,
+          label: sc.label,
+          params: sc.params,
+          status: t.status,
+          textIntact: null,
+          voiceCorrelation: req.reference ? correlation(req.reference, r.stages.recovered) : null,
+          voiceBandSnrDb: bandSnrDb(req.stego, rx, req.sampleRate, vl.carrierLow * bin, (vl.carrierLow + vl.width) * bin),
+          textLaneSnrDb: bandSnrDb(req.stego, rx, req.sampleRate, lane.start * bin, (lane.start + lane.width) * bin),
+          ...(t.text !== null ? { textIntact: true } : {}),
+        })
+        report({ stage: sc.id, ms: 0 })
       }
+      return out
+    }
+    case 'compare': {
+      const sameLength = req.received.length === req.stego.length
+      const stegoCorrelation = sameLength ? correlation(req.stego, req.received) : null
+      const linked = stegoCorrelation !== null && stegoCorrelation > LINK_CORRELATION
+      if (!linked) return { stegoCorrelation, linked, coverSnrDb: null, voice: null, ber: null } satisfies CompareOutput
+      const ref = req.secretReference
+      return {
+        stegoCorrelation,
+        linked,
+        coverSnrDb: gainMatchedSnrDb(req.cover, req.stego),
+        voice: ref
+          ? { snrDb: gainMatchedSnrDb(ref, req.recovered), segSnrDb: segmentalSnrDb(ref, req.recovered), correlation: correlation(ref, req.recovered) }
+          : null,
+        ber: req.sentBits ? bitErrorRate(req.sentBits, req.receivedBits) : null,
+      } satisfies CompareOutput
     }
   }
 }
 
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   const req = ev.data
+  const report = (progress: StageTiming) => self.postMessage({ id: req.id, progress } satisfies WorkerResponse)
   try {
-    const result = await handle(req)
+    const result = await handle(req, report)
     const msg: WorkerResponse = { id: req.id, ok: true, result }
     self.postMessage(msg, result ? transferables(result) : [])
   } catch (err) {

@@ -1,4 +1,3 @@
-import { motion } from 'motion/react'
 import { useMemo } from 'react'
 import { HEADER_BITS } from '../../dsp/bit-lane'
 import { useElementWidth } from '../charts/use-element-width'
@@ -7,14 +6,15 @@ import { cn } from '../ui/primitives'
 const hex = (b: number) => b.toString(16).padStart(2, '0')
 
 const SEGMENTS = [
-  { label: 'salt', bytes: 16, cls: 'bg-amber-400/20 text-amber-200 ring-amber-400/40' },
-  { label: 'IV', bytes: 12, cls: 'bg-violet-400/20 text-violet-200 ring-violet-400/40' },
-  { label: 'ciphertext', bytes: -1, cls: 'bg-cyan-400/15 text-cyan-200 ring-cyan-400/40' },
-  { label: 'GCM tag', bytes: 16, cls: 'bg-rose-400/20 text-rose-200 ring-rose-400/40' },
+  { label: 'salt', bytes: 16, cls: 'text-warn' },
+  { label: 'IV', bytes: 12, cls: 'text-blue' },
+  { label: 'ciphertext', bytes: -1, cls: 'text-teal' },
+  { label: 'GCM tag', bytes: 16, cls: 'text-ok' },
 ] as const
 
 /** The encrypted frame byte by byte: salt | IV | ciphertext | tag. */
 export function CipherFrameView({ cipher, plaintext }: { cipher: Uint8Array; plaintext: string }) {
+  if (cipher.length === 0) return <p className="text-[13px] text-fg-3">No ciphertext was produced.</p>
   const ctLen = cipher.length - 16 - 12 - 16
   let offset = 0
   const parts = SEGMENTS.map((seg) => {
@@ -24,24 +24,24 @@ export function CipherFrameView({ cipher, plaintext }: { cipher: Uint8Array; pla
     return { ...seg, bytes }
   })
   return (
-    <div className="space-y-3">
-      <div className="rounded-xl bg-black/30 p-3 ring-1 ring-white/10">
-        <div className="mb-1 text-[11px] uppercase tracking-wider text-slate-500">plaintext ({new TextEncoder().encode(plaintext).length} bytes UTF-8)</div>
-        <div className="font-mono text-sm text-slate-100">{plaintext}</div>
+    <div className="space-y-4">
+      <div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">plaintext · {new TextEncoder().encode(plaintext).length} bytes UTF-8</div>
+        <div className="mt-1 break-words font-mono text-[13px] text-fg">{plaintext || <span className="text-fg-3">(empty — key-verification token for a voice payload)</span>}</div>
       </div>
-      <div className="rounded-xl bg-black/30 p-3 ring-1 ring-white/10">
-        <div className="mb-2 flex flex-wrap items-center gap-3 text-[11px] uppercase tracking-wider text-slate-500">
-          encrypted frame ({cipher.length} bytes)
+      <div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+          <span>encrypted frame · {cipher.length} bytes</span>
           {parts.map((p) => (
-            <span key={p.label} className={cn('rounded px-1.5 py-0.5 normal-case tracking-normal ring-1', p.cls)}>
-              {p.label} · {p.bytes.length}
+            <span key={p.label} className={p.cls}>
+              ■ {p.label} {p.bytes.length}
             </span>
           ))}
         </div>
-        <div className="flex flex-wrap gap-[3px] font-mono text-[10px]">
+        <div className="mt-2 flex flex-wrap gap-x-[6px] gap-y-0.5 font-mono text-[11px] leading-5">
           {parts.flatMap((p) =>
             p.bytes.map((b, i) => (
-              <span key={`${p.label}${i}`} className={cn('rounded px-1 py-0.5 ring-1', p.cls)}>
+              <span key={`${p.label}${i}`} className={p.cls}>
                 {hex(b)}
               </span>
             )),
@@ -52,37 +52,28 @@ export function CipherFrameView({ cipher, plaintext }: { cipher: Uint8Array; pla
   )
 }
 
-/** Bitstream as squares; header bits are outlined, bit errors (vs `reference`) turn red. */
+/** Bitstream as squares; header bits are underlined, bit errors (vs `reference`) turn red. */
 export function BitGrid({ bits, reference, max = 1400, title }: { bits: Uint8Array; reference?: Uint8Array | null; max?: number; title?: string }) {
   const shown = Math.min(bits.length, max)
+  let errors = 0
+  if (reference) for (let i = 0; i < shown && i < reference.length; i++) if (reference[i] !== bits[i]) errors++
   return (
-    <div className="rounded-xl bg-black/30 p-3 ring-1 ring-white/10">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-        <span>{title ?? 'Bitstream'} — first {shown} of {bits.length} bits</span>
+    <div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">
+        <span>
+          {title ?? 'Bitstream'} · {shown === bits.length ? `${bits.length} bits` : `first ${shown} of ${bits.length} bits`}
+        </span>
         <span className="flex items-center gap-3">
-          <Legend cls="bg-cyan-300" label="1" />
-          <Legend cls="bg-slate-700" label="0" />
-          <Legend cls="bg-slate-700 ring-1 ring-amber-300" label="header" />
-          {reference && <Legend cls="bg-rose-500" label="bit error" />}
+          <Legend cls="bg-teal" label="1" />
+          <Legend cls="bg-line-2" label="0" />
+          <Legend cls="bg-line-2 outline outline-1 outline-warn" label="header" />
+          {reference && <Legend cls="bg-err" label={`error (${errors})`} />}
         </span>
       </div>
-      <div className="flex flex-wrap gap-[2px]">
+      <div className="flex flex-wrap gap-[2px]" role="img" aria-label={`${shown} bits${reference ? `, ${errors} differ from what was sent` : ''}`}>
         {Array.from({ length: shown }, (_, i) => {
           const wrong = reference && i < reference.length && reference[i] !== bits[i]
-          return (
-            <motion.span
-              key={i}
-              initial={{ opacity: 0, scale: 0.4 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: Math.min(i * 0.002, 0.8) }}
-              title={`bit ${i}: ${bits[i]}${wrong ? ` (sent ${reference![i]})` : ''}`}
-              className={cn(
-                'size-2.5 rounded-[2px]',
-                wrong ? 'bg-rose-500' : bits[i] ? 'bg-cyan-300' : 'bg-slate-700',
-                i < HEADER_BITS && 'ring-1 ring-amber-300/80',
-              )}
-            />
-          )
+          return <span key={i} className={cn('size-2', wrong ? 'bg-err' : bits[i] ? 'bg-teal' : 'bg-line-2', i < HEADER_BITS && 'outline outline-1 outline-warn/70')} />
         })}
       </div>
     </div>
@@ -92,7 +83,7 @@ export function BitGrid({ bits, reference, max = 1400, title }: { bits: Uint8Arr
 function Legend({ cls, label }: { cls: string; label: string }) {
   return (
     <span className="inline-flex items-center gap-1">
-      <span className={cn('inline-block size-2.5 rounded-[2px]', cls)} />
+      <span className={cn('inline-block size-2', cls)} />
       {label}
     </span>
   )
@@ -106,33 +97,32 @@ export function ConstellationPlot({ re, im, height = 240 }: { re: Float32Array; 
     for (let i = 0; i < re.length; i++) m = Math.max(m, Math.abs(re[i]) * 1.1, Math.abs(im[i]) * 1.1)
     return Math.min(m, 6)
   }, [re, im])
-  const size = Math.min(width, height)
+  const size = Math.max(160, Math.min(width, height))
   const pad = 22
   const sx = (v: number) => pad + ((v + lim) / (2 * lim)) * (size - 2 * pad)
   const sy = (v: number) => size - pad - ((v + lim) / (2 * lim)) * (size - 2 * pad)
   return (
     <div ref={ref} className="flex w-full justify-center">
-      <svg width={size} height={size}>
-        <rect x={sx(0)} y={pad} width={sx(lim) - sx(0)} height={size - 2 * pad} fill="rgba(34,211,238,0.06)" />
-        <rect x={pad} y={pad} width={sx(0) - pad} height={size - 2 * pad} fill="rgba(167,139,250,0.06)" />
-        <line x1={pad} x2={size - pad} y1={sy(0)} y2={sy(0)} stroke="rgba(148,163,184,0.35)" />
-        <line x1={sx(0)} x2={sx(0)} y1={pad} y2={size - pad} stroke="#fbbf24" strokeDasharray="4 3" />
+      <svg width={size} height={size} role="img" aria-label={`BPSK constellation of ${re.length} despread symbols`}>
+        <rect x={pad} y={pad} width={size - 2 * pad} height={size - 2 * pad} fill="none" stroke="var(--color-line)" />
+        <line x1={pad} x2={size - pad} y1={sy(0)} y2={sy(0)} stroke="var(--color-line-2)" />
+        <line x1={sx(0)} x2={sx(0)} y1={pad} y2={size - pad} stroke="var(--color-warn)" strokeDasharray="3 3" />
         {[-1, 1].map((v) => (
           <g key={v}>
-            <circle cx={sx(v)} cy={sy(0)} r={7} fill="none" stroke="white" strokeOpacity={0.5} />
-            <text x={sx(v)} y={sy(0) + 22} textAnchor="middle" className="fill-slate-400 font-mono text-[10px]">
-              {v > 0 ? '+1 → bit 0' : '−1 → bit 1'}
+            <circle cx={sx(v)} cy={sy(0)} r={6} fill="none" stroke="var(--color-fg-2)" strokeOpacity={0.6} />
+            <text x={sx(v)} y={sy(0) + 20} textAnchor="middle" className="fill-fg-3 font-mono text-[10px]">
+              {v > 0 ? '+1 → 0' : '−1 → 1'}
             </text>
           </g>
         ))}
         {Array.from(re, (r, i) => (
-          <circle key={i} cx={sx(r)} cy={sy(im[i])} r={1.8} fill={r >= 0 ? '#22d3ee' : '#a78bfa'} opacity={0.75} />
+          <circle key={i} cx={sx(r)} cy={sy(im[i])} r={1.6} fill={r >= 0 ? 'var(--color-teal)' : 'var(--color-blue)'} opacity={0.8} />
         ))}
-        <text x={size - pad} y={sy(0) - 6} textAnchor="end" className="fill-slate-500 text-[10px]">
+        <text x={size - pad - 2} y={sy(0) - 5} textAnchor="end" className="fill-fg-3 font-mono text-[10px]">
           Re
         </text>
-        <text x={sx(0) + 6} y={pad + 10} className="fill-slate-500 text-[10px]">
-          Im · decision boundary
+        <text x={sx(0) + 5} y={pad + 11} className="fill-fg-3 font-mono text-[10px]">
+          Im · decision
         </text>
       </svg>
     </div>
