@@ -1,4 +1,4 @@
-import { fft } from './fft'
+import { fft, nextPow2 } from './fft'
 import { windowValue } from './fir'
 
 export function energy(x: ArrayLike<number>): number {
@@ -129,8 +129,19 @@ export interface Psd {
 /**
  * Welch power spectral density estimate (Hann window), in dB. `overlap` is the fraction of each frame
  * shared with the next; at most `maxFrames` frames, spread evenly over the signal, are averaged.
+ *
+ * `scaling = 'relative'` (default) is the per-bin power normalised by the window energy, as used by the
+ * quick previews. `'density'` is the calibrated one-sided PSD in dB re 1 (full scale)² / Hz, so that
+ * summing it over frequency gives the signal's mean power.
  */
-export function welchPsd(x: Float32Array, sampleRate: number, nfft = 2048, overlap = 0.5, maxFrames = Infinity): Psd {
+export function welchPsd(
+  x: Float32Array,
+  sampleRate: number,
+  nfft = 2048,
+  overlap = 0.5,
+  maxFrames = Infinity,
+  scaling: 'relative' | 'density' = 'relative',
+): Psd {
   const baseHop = Math.max(1, Math.round(nfft * (1 - overlap)))
   const available = Math.max(1, Math.floor((Math.max(x.length, nfft) - nfft) / baseHop) + 1)
   const hop = available > maxFrames ? Math.floor((Math.max(x.length, nfft) - nfft) / (maxFrames - 1)) || baseHop : baseHop
@@ -158,9 +169,41 @@ export function welchPsd(x: Float32Array, sampleRate: number, nfft = 2048, overl
   const db = new Float32Array(bins)
   for (let k = 0; k < bins; k++) {
     freqs[k] = (k * sampleRate) / nfft
-    db[k] = 10 * Math.log10(Math.max(acc[k] / (count * wPow), 1e-14))
+    let p = acc[k] / (count * wPow)
+    if (scaling === 'density') p = (p / sampleRate) * (k === 0 || k === bins - 1 ? 1 : 2)
+    db[k] = 10 * Math.log10(Math.max(p, 1e-20))
   }
   return { freqs, db }
+}
+
+/**
+ * SNR of `test` against `ref` measured only inside [lowHz, highHz): how much a channel damaged one band.
+ * Uses one FFT of the reference and one of the error, so a volume change counts as damage too.
+ */
+export function bandSnrDb(ref: Float32Array, test: Float32Array, sampleRate: number, lowHz: number, highHz: number): number {
+  const len = Math.min(ref.length, test.length)
+  const n = nextPow2(len)
+  const rr = new Float64Array(n)
+  const ri = new Float64Array(n)
+  const er = new Float64Array(n)
+  const ei = new Float64Array(n)
+  for (let i = 0; i < len; i++) {
+    rr[i] = ref[i]
+    er[i] = test[i] - ref[i]
+  }
+  fft(rr, ri)
+  fft(er, ei)
+  const k0 = Math.round((lowHz / sampleRate) * n)
+  const k1 = Math.min(n / 2, Math.round((highHz / sampleRate) * n))
+  let s = 0
+  let e = 0
+  for (let k = k0; k < k1; k++) {
+    s += rr[k] * rr[k] + ri[k] * ri[k]
+    e += er[k] * er[k] + ei[k] * ei[k]
+  }
+  if (e === 0) return Infinity
+  if (s === 0) return -Infinity
+  return 10 * Math.log10(s / e)
 }
 
 export interface Spectrogram {

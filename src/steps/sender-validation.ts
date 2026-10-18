@@ -47,6 +47,15 @@ export function coverTextLimit(cover: AudioClip | null): { limit: number | null;
   }
 }
 
+/** Whether the text lane can carry the voice frame's AES-GCM key token (header + 44 bytes), as the worker checks. */
+export function voiceTokenFits(cover: AudioClip): boolean {
+  try {
+    return payloadCapacityBytes(computeLaneLayout(fftSizeFor(cover.samples.length), SAMPLE_RATE)) >= CRYPTO_OVERHEAD
+  } catch {
+    return false
+  }
+}
+
 export function capacityInfo(cover: AudioClip | null, text: string): CapacityInfo {
   const { limit, error } = coverTextLimit(cover)
   const used = utf8Length(text)
@@ -78,8 +87,12 @@ export interface SenderInput {
   secret: AudioClip | null
   key: string
   hiddenText: string
-  beginner: boolean
+  /** The one payload that will be hidden. The other input keeps its content but is ignored. */
+  mode: PayloadMode
+  beginner?: boolean
 }
+
+export type PayloadMode = 'text' | 'voice'
 
 /** peak() walks every sample, so cache per clip object — clips are replaced, never mutated. */
 const silenceCache = new WeakMap<AudioClip, boolean>()
@@ -110,9 +123,9 @@ export interface SenderStatus {
   capacity: CapacityInfo
 }
 
-export function validateSender({ cover, secret, key, hiddenText, beginner }: SenderInput): SenderStatus {
+export function validateSender({ cover, secret, key, hiddenText, mode, beginner }: SenderInput): SenderStatus {
   const issues: SenderIssue[] = []
-  const capacity = capacityInfo(cover, hiddenText)
+  const capacity = capacityInfo(cover, mode === 'text' ? hiddenText : '')
 
   // --- cover ---------------------------------------------------------------
   if (!cover) {
@@ -135,27 +148,44 @@ export function validateSender({ cover, secret, key, hiddenText, beginner }: Sen
     }
   }
 
-  // --- secret voice (encode() requires it in both UI modes) ----------------
-  if (!secret) {
+  // --- payload: exactly one of text or voice -------------------------------
+  const hasText = hiddenText.trim().length > 0
+  if (mode === 'text' && !hasText) {
     issues.push({
-      id: 'secret-missing',
-      label: 'Voice message',
-      detail: beginner
-        ? 'Add the secret voice message — record it with your microphone, or use the demo clip.'
-        : 'Load the secret voice to hide — record, upload, or use the demo clip.',
+      id: 'text-empty',
+      label: 'Text message',
+      detail: hiddenText.length > 0 ? 'The message is only whitespace. Type the text to hide.' : 'Type the text message to hide.',
       tone: 'blocking',
     })
-  } else {
-    if (secret.samples.length === 0) {
-      issues.push({ id: 'secret-empty', label: 'Voice message', detail: 'The secret voice contains no samples. Record or load it again.', tone: 'blocking' })
-    } else if (isSilent(secret)) {
-      issues.push({ id: 'secret-silent', label: 'Voice message', detail: 'The secret voice is silent. Record again, and check that the right microphone is selected.', tone: 'blocking' })
-    }
-    if (cover && secret.duration > cover.duration) {
+  }
+  if (mode === 'voice') {
+    if (!secret) {
       issues.push({
-        id: 'secret-longer',
-        label: 'Voice trimmed',
-        detail: `The secret (${secret.duration.toFixed(1)} s) is longer than the cover (${cover.duration.toFixed(1)} s) and will be cut to fit.`,
+        id: 'secret-missing',
+        label: 'Voice message',
+        detail: beginner ? 'Record the voice message, or upload a recording.' : 'Record or upload the voice message to hide.',
+        tone: 'blocking',
+      })
+    } else {
+      if (secret.samples.length === 0) {
+        issues.push({ id: 'secret-empty', label: 'Voice message', detail: 'The voice recording contains no samples. Record or load it again.', tone: 'blocking' })
+      } else if (isSilent(secret)) {
+        issues.push({ id: 'secret-silent', label: 'Voice message', detail: 'The voice recording is silent. Record again, and check that the right microphone is selected.', tone: 'blocking' })
+      }
+      if (cover && secret.duration > cover.duration) {
+        issues.push({
+          id: 'secret-longer',
+          label: 'Voice trimmed',
+          detail: `The voice (${secret.duration.toFixed(1)} s) is longer than the cover (${cover.duration.toFixed(1)} s); only the first ${cover.duration.toFixed(1)} s will be hidden.`,
+          tone: 'warning',
+        })
+      }
+    }
+    if (cover && !voiceTokenFits(cover)) {
+      issues.push({
+        id: 'voice-no-token',
+        label: 'Key verification',
+        detail: 'This cover is too short to carry the key-verification token, so the receiver will not be able to verify the key.',
         tone: 'warning',
       })
     }
@@ -180,16 +210,16 @@ export function validateSender({ cover, secret, key, hiddenText, beginner }: Sen
   }
 
   // --- hidden text (frameBits rejects an oversized payload) ----------------
-  if (capacity.error && hiddenText.length > 0) {
+  if (mode === 'text' && capacity.error && hasText) {
     issues.push({ id: 'text-no-capacity', label: 'Hidden text', detail: `${capacity.error} Clear the text, or load a longer cover.`, tone: 'blocking' })
-  } else if (capacity.over) {
+  } else if (mode === 'text' && hasText && capacity.over) {
     issues.push({
       id: 'text-too-long',
       label: 'Hidden text',
       detail: `The hidden text needs ${capacity.used} bytes but this cover carries ${capacity.limit}. Remove about ${capacity.used - (capacity.limit ?? 0)} bytes, or use a longer cover.`,
       tone: 'blocking',
     })
-  } else if (capacity.limit !== null && capacity.limit > 0 && capacity.used > capacity.limit * 0.9) {
+  } else if (mode === 'text' && hasText && capacity.limit !== null && capacity.limit > 0 && capacity.used > capacity.limit * 0.9) {
     issues.push({ id: 'text-near-limit', label: 'Hidden text', detail: `Only ${capacity.remaining} bytes left in the text lane.`, tone: 'warning' })
   }
 

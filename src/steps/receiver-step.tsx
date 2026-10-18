@@ -1,202 +1,210 @@
-import {
-  ArrowRight,
-  Binary,
-  CircleAlert,
-  CircleCheck,
-  Eye,
-  EyeOff,
-  FileAudio,
-  KeyRound,
-  Lock,
-  RotateCcw,
-  SlidersHorizontal,
-  TriangleAlert,
-  Upload,
-  Workflow,
-} from 'lucide-react'
-import { motion } from 'motion/react'
+import { ArrowRight, Binary, KeyRound, RotateCcw, Upload, Workflow, X } from 'lucide-react'
+import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { loadClipFromFile, type AudioClip } from '../audio/load-audio'
+import { loadClipFromFile } from '../audio/load-audio'
 import { WaveformPlayer } from '../components/audio/waveform-player'
 import { ButterflyExplorer } from '../components/butterfly/butterfly-explorer'
-import { BeginnerTour, type BeginnerTourStep } from '../components/layout/beginner-tour'
-import { PipelineFlow } from '../components/pipeline/pipeline-flow'
+import { useJourney } from '../components/channel/journey'
+import { TransmissionAnimation } from '../components/channel/transmission-animation'
+import { SpectrogramCanvas } from '../components/charts/spectrogram-canvas'
+import { SpectrumAnalyzer } from '../components/charts/spectrum-analyzer'
+import { ProcessLog } from '../components/diagram/process-log'
+import { SignalDiagram, type NodeState } from '../components/diagram/signal-diagram'
+import { useWalkthrough, WalkthroughControls } from '../components/diagram/walkthrough'
+import { BeginnerTour, useStageTour, type BeginnerTourStep } from '../components/layout/beginner-tour'
+import { StageFrame } from '../components/layout/stage-frame'
 import { PermutationView } from '../components/pipeline/permutation-view'
-import { TextDecodePanel, TextStatusBanner } from '../components/text-lane/text-result'
 import { BitGrid, ConstellationPlot } from '../components/text-lane/text-lane-views'
-import { StageInspector } from '../components/pipeline/stage-inspector'
-import { Badge, Button, Card, CardTitle, Segmented, Tabs, TabsContent, TabsList, cn } from '../components/ui/primitives'
-import { SAMPLE_RATE } from '../dsp/constants'
-import { DECODE_EDGES, DECODE_NODES } from '../pipeline/stage-meta'
+import { KeyField } from '../components/ui/key-field'
+import { Button, Eyebrow, Notice, Readout, Tabs, TabsContent, TabsList, cn, fmtMs } from '../components/ui/primitives'
+import { spectrogram } from '../dsp/analysis'
+import { computeLaneLayout } from '../dsp/bit-lane'
+import { MAX_DURATION_S, SAMPLE_RATE } from '../dsp/constants'
+import type { FftKind } from '../dsp/fft'
+import { computeLayout } from '../dsp/spectral-ops'
+import { fftSizeFor } from '../dsp/stego'
+import { DECODER_EDGES, DECODER_NODE_STAGE, DECODER_NODES, DECODE_STEP_LABEL, DECODE_STEP_ORDER, decoderSteps } from '../pipeline/decoder-pipeline'
 import { useStegoStore } from '../store/use-stego-store'
-import { channelLabel, formatBytes, formatHz } from './sender-validation'
+import type { DecodeOutput } from '../worker/protocol'
 import { checkReceivedAudio, checkReceiverKey, recoveryVerdict } from './receiver-validation'
-import { useReveal } from './use-reveal'
+import { channelLabel, formatBytes, formatHz } from './sender-validation'
 
-const MAX_ORDER = Math.max(...DECODE_NODES.map((n) => n.order))
-
-// One step per gate. Every target is a card that stays mounted, locked or not, so the tour never
-// points at a control that has not appeared yet.
-const BEGINNER_RECEIVER_TOUR_STEPS: BeginnerTourStep[] = [
-  {
-    target: 'receiver-overview',
-    title: 'What are we doing?',
-    text: 'We are the receiver now.\n\nAll we have is the audio file that arrived — load it here to begin. Nothing is carried over from the sender.',
-  },
-  {
-    target: 'receiver-key',
-    title: 'Why do we need the key?',
-    text: 'The hidden information was scrambled with a shared secret key.\n\nYou have to type that key in yourself. This step unlocks once a valid file is loaded.',
-  },
-  {
-    target: 'receiver-fft',
-    title: 'Your turn',
-    text: 'Once the key is in, the decoder appears.\n\nIt uses the FFT to find the hidden frequency region, extract the information and rebuild the secret. Start the recovery when you are ready.',
-  },
+const TOUR: BeginnerTourStep[] = [
+  { target: 'rx-file', title: 'Start with the file', text: 'The receiver has nothing but the audio file that arrived. Load it here — nothing is taken from the sender.' },
+  { target: 'rx-key', title: 'Type the key', text: 'The key never travels with the file. Type the one the sender gave you; it is not filled in for you.' },
+  { target: 'rx-decode', title: 'Decode', text: 'Decode, and the result is checked with AES-GCM. Nothing is presented as recovered until that check passes.' },
 ]
 
-/** Size of the 16-bit WAV the channel step hands you, so the panel reads like a real file. */
-const wavBytes = (samples: number) => 44 + samples * 2
-
-/** One numbered step of the receiver flow. Locked steps stay mounted but show no controls. */
-function GateCard({
-  index,
-  title,
-  hint,
-  icon,
-  locked,
-  lockedHint,
-  done,
-  tourTarget,
-  children,
-}: {
-  index: number
-  title: string
-  hint: string
-  icon: ReactNode
-  locked?: boolean
-  lockedHint?: string
-  done?: boolean
-  tourTarget: string
-  children: ReactNode
-}) {
+function Gate({ index, title, done, children, tourTarget }: { index: string; title: string; done?: boolean; children: ReactNode; tourTarget: string }) {
   return (
-    <div data-tour-target={tourTarget}>
-      <Card className={cn('transition-opacity', locked && 'opacity-60')}>
-        <div className="mb-4 flex items-start gap-3">
-          <span
-            className={cn(
-              'grid size-9 shrink-0 place-items-center rounded-xl text-sm font-semibold ring-1',
-              locked ? 'bg-white/5 text-slate-500 ring-white/10' : done ? 'bg-emerald-400/10 text-emerald-300 ring-emerald-400/30' : 'bg-cyan-400/10 text-cyan-300 ring-cyan-400/30',
-            )}
-          >
-            {locked ? <Lock className="size-4" aria-hidden="true" /> : done ? <CircleCheck className="size-4" aria-hidden="true" /> : index}
-          </span>
-          <div className="min-w-0">
-            <h3 className="flex flex-wrap items-center gap-2 text-sm font-semibold tracking-wide text-white">
-              {icon}
-              {title}
-            </h3>
-            <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{locked ? lockedHint : hint}</p>
+    <motion.section
+      data-tour-target={tourTarget}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+      className="border-t border-line pt-6"
+    >
+      <div className="flex items-baseline justify-between">
+        <Eyebrow index={index} tone="teal">
+          {title}
+        </Eyebrow>
+        {done && <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ok">✓ set</span>}
+      </div>
+      <div className="mt-4">{children}</div>
+    </motion.section>
+  )
+}
+
+/** Where the decoder will look, computed from this file's length exactly as decode() will. */
+function bandMarks(length: number) {
+  try {
+    const n = fftSizeFor(length)
+    const v = computeLayout(n, SAMPLE_RATE)
+    const l = computeLaneLayout(n, SAMPLE_RATE)
+    return [
+      { hz: v.carrierLow * v.binHz, label: 'voice', color: '#4ea5ff' },
+      { hz: l.start * l.binHz, label: 'text', color: '#20d6c7' },
+    ]
+  } catch {
+    return []
+  }
+}
+
+function DecoderWalkthrough({ dec, kind }: { dec: DecodeOutput; kind: FftKind }) {
+  const steps = useMemo(() => decoderSteps(dec, kind), [dec, kind])
+  const w = useWalkthrough(steps.length, dec)
+  const step = steps[w.index]
+  const states = useMemo(() => {
+    const seen = new Set<string>()
+    steps.slice(0, w.index).forEach((s) => s.nodes.forEach((id) => seen.add(id)))
+    const st: Record<string, NodeState> = {}
+    for (const n of DECODER_NODES) st[n.id] = step.nodes.includes(n.id) ? 'active' : seen.has(n.id) || n.id === 'received' ? 'done' : 'idle'
+    return st
+  }, [steps, step, w.index])
+  const timings = new Map(dec.log.map((t) => [t.stage, t.ms]))
+  const view = step.stage ? dec.stages[step.stage] : null
+  const before = step.before ? dec.stages[step.before] : null
+
+  return (
+    <div>
+      <div className="border-y border-line py-5">
+        <SignalDiagram
+          nodes={DECODER_NODES}
+          edges={DECODER_EDGES}
+          states={states}
+          onSelect={(id) => {
+            const i = steps.findIndex((s) => s.nodes.includes(id))
+            if (i >= 0) w.go(i)
+          }}
+          rows={2}
+          cols={9}
+          label="Decoder block diagram"
+        />
+      </div>
+      <div className="border-b border-line py-4">
+        <WalkthroughControls w={w} label="Decoder walkthrough" />
+      </div>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div key={step.id} className="pt-8" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.22 }}>
+          <div className="grid gap-x-10 gap-y-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+            <div className="min-w-0">
+              <Eyebrow index={String(w.index + 1).padStart(2, '0')} tone="teal">
+                {step.timing ? `${DECODE_STEP_LABEL[step.timing]} · ${fmtMs(timings.get(step.timing) ?? 0)} ms measured` : 'input'}
+              </Eyebrow>
+              <h3 className="mt-2 text-[22px] font-light text-fg">{step.title}</h3>
+              <p className="mt-2 max-w-3xl text-[14px] leading-relaxed text-fg-2">{step.body}</p>
+            </div>
+            {step.formula && <div className="self-start border-l border-teal/60 py-1 pl-4 font-mono text-[12px] text-fg">{step.formula}</div>}
           </div>
-        </div>
-        {!locked && children}
-      </Card>
+          {view && (
+            <div className="mt-6 max-w-3xl">
+              <WaveformPlayer samples={view.samples} label="Signal at this block" normalize={step.normalize} note={step.normalize ? 'loudness normalised for listening' : undefined} height={56} />
+            </div>
+          )}
+          {view && (
+            <div className="mt-8">
+              <SpectrumAnalyzer output={view.samples} input={before?.samples ?? null} layout={dec.layout} outputLabel="after this block" inputLabel="entering" initialZoom={step.zoom ?? 'full'} />
+            </div>
+          )}
+          {step.id === 'unpermute' && (
+            <div className="mt-8">
+              <PermutationView permutation={dec.permutation} caption="regenerated from the receiver key" />
+            </div>
+          )}
+          {step.id === 'despread' && (
+            <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,18rem)_1fr]">
+              <div>
+                <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.14em] text-fg-3">BPSK constellation</div>
+                <ConstellationPlot re={dec.text.softRe} im={dec.text.softIm} />
+              </div>
+              {/* the receiver never sees the sent bits, so no error marking here */}
+              <BitGrid bits={dec.text.bits} title="Decided bits" />
+            </div>
+          )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   )
 }
 
-function Notice({ tone, children }: { tone: 'error' | 'warning' | 'ok'; children: ReactNode }) {
-  const tones = {
-    error: { cls: 'bg-rose-500/10 text-rose-200 ring-rose-400/30', Icon: CircleAlert, iconCls: 'text-rose-400' },
-    warning: { cls: 'bg-amber-400/10 text-amber-100 ring-amber-400/30', Icon: TriangleAlert, iconCls: 'text-amber-400' },
-    ok: { cls: 'bg-emerald-400/10 text-emerald-100 ring-emerald-400/30', Icon: CircleCheck, iconCls: 'text-emerald-400' },
-  }[tone]
-  const { Icon } = tones
+function LiveDecoder() {
+  const { decodeLog, busy } = useStegoStore()
+  const done = new Set(decodeLog.map((t) => t.stage))
+  const pending = DECODE_STEP_ORDER.find((s) => !done.has(s))
+  const st: Record<string, NodeState> = {}
+  for (const n of DECODER_NODES) {
+    const stage = DECODER_NODE_STAGE[n.id]
+    st[n.id] = stage === 'start' || done.has(stage as never) ? 'done' : busy === 'decode' && stage === pending ? 'running' : 'idle'
+  }
   return (
-    <div className={cn('flex items-start gap-2.5 rounded-xl px-3.5 py-3 text-xs leading-relaxed ring-1', tones.cls)}>
-      <Icon className={cn('mt-0.5 size-4 shrink-0', tones.iconCls)} aria-hidden="true" />
-      <div className="min-w-0">{children}</div>
+    <div className="border-y border-line py-5">
+      <SignalDiagram nodes={DECODER_NODES} edges={DECODER_EDGES} states={st} rows={2} cols={9} label="Decoder, live progress" />
     </div>
   )
 }
 
 export function ReceiverStep() {
-  const s = useStegoStore()
-  const { decoded, receiverKey, fftKind, busy, receivedFile, transmitted } = s
+  const { receivedFile, receivedOrigin, receiverKey, setReceiverKey, setReceivedFile, fftKind, decode, decoded, decodeLog, decodeError, busy, goTo, cancel, cancelled } = useStegoStore()
+  const journey = useJourney('receive')
+  const [tourOpen, setTourOpen] = useStageTour('receiver')
   const fileRef = useRef<HTMLInputElement>(null)
-  const [tab, setTab] = useState('butterfly')
-  const [epoch, setEpoch] = useState(0)
-  const revealed = useReveal(MAX_ORDER, tab === 'pipeline' ? decoded : null, epoch)
-  const [selected, setSelected] = useState('recovered')
-  const [tourOpen, setTourOpen] = useState(s.uiMode === 'beginner')
-  const node = useMemo(() => DECODE_NODES.find((n) => n.id === selected) ?? DECODE_NODES[0], [selected])
-
-  const [loadingFile, setLoadingFile] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
-  const [keyConfirmed, setKeyConfirmed] = useState(false)
+  const [keyConfirmed, setKeyConfirmed] = useState(() => receiverKey.trim().length > 0 && !!decoded)
   const [keyError, setKeyError] = useState<string | null>(null)
-  const [showKey, setShowKey] = useState(false)
-  const [decodeError, setDecodeError] = useState<string | null>(null)
+  const [tab, setTab] = useState('pipeline')
 
   useEffect(() => {
-    setTourOpen(s.uiMode === 'beginner')
-  }, [s.uiMode])
+    if (!receiverKey) setKeyConfirmed(false)
+  }, [receiverKey])
 
-  useEffect(() => {
-    const latest = DECODE_NODES.find((n) => n.order === revealed)
-    if (latest) setSelected(latest.id)
-  }, [revealed])
-
-  // The received file is the receiver's only input; checking it costs one PSD, so memoise per clip.
   const audioCheck = useMemo(() => checkReceivedAudio(receivedFile), [receivedFile])
   const keyCheck = checkReceiverKey(receiverKey)
-
   const audioReady = !!receivedFile && !audioCheck.error
   const keyReady = audioReady && keyConfirmed && !keyCheck.error
+  const decoding = busy === 'decode'
+  const spec = useMemo(() => (receivedFile && audioReady ? spectrogram(receivedFile.samples, SAMPLE_RATE, 1024, 320) : null), [receivedFile, audioReady])
+  const marks = useMemo(() => (receivedFile ? bandMarks(receivedFile.samples.length) : []), [receivedFile])
 
   const accept = async (file: File) => {
-    setLoadingFile(true)
+    if (loading || decoding) return
+    setLoading(true)
     setFileError(null)
-    setDecodeError(null)
     try {
-      s.setReceivedFile(await loadClipFromFile(file))
+      setReceivedFile(await loadClipFromFile(file), 'upload')
     } catch (e) {
-      s.setReceivedFile(null)
+      // a file that will not decode leaves any previous file in place, and says why
       setFileError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoadingFile(false)
+      setLoading(false)
     }
-  }
-
-  /** The channel step hands over the same bytes its download button writes. */
-  const useChannelAudio = () => {
-    if (!transmitted) return
-    const samples = transmitted.received.samples
-    const clip: AudioClip = {
-      name: 'received.wav (from the simulated channel)',
-      samples,
-      duration: samples.length / SAMPLE_RATE,
-      truncated: false,
-      source: { kind: 'file', bytes: wavBytes(samples.length), format: 'WAV', channels: 1, sourceSampleRate: SAMPLE_RATE },
-    }
-    setFileError(null)
-    setDecodeError(null)
-    s.setReceivedFile(clip)
-  }
-
-  const clearFile = () => {
-    s.setReceivedFile(null)
-    setFileError(null)
-    setDecodeError(null)
-    setKeyConfirmed(false)
   }
 
   const confirmKey = () => {
-    const check = checkReceiverKey(receiverKey)
-    if (check.error) {
-      setKeyError(check.error)
+    const c = checkReceiverKey(receiverKey)
+    if (c.error) {
+      setKeyError(c.error)
       setKeyConfirmed(false)
       return
     }
@@ -204,293 +212,218 @@ export function ReceiverStep() {
     setKeyConfirmed(true)
   }
 
-  const recover = async () => {
-    setDecodeError(null)
-    const ok = await s.decode()
-    if (!ok) setDecodeError(useStegoStore.getState().error ?? 'Recovery failed. Check the file and the key, then try again.')
-  }
-
+  const verdict = decoded ? recoveryVerdict(decoded.text.status, decoded.text.content) : null
   const info = receivedFile?.source ?? null
-  const verdict = decoded ? recoveryVerdict(decoded.text.status) : null
+  const origin = receivedOrigin === 'transfer-stego' ? 'delivered from Transfer · original stego' : receivedOrigin === 'transfer-channel' ? 'delivered from Transfer · channel output' : 'uploaded'
+
+  const aside = (
+    <>
+      {(decoding || decodeLog.length > 0) && <ProcessLog order={DECODE_STEP_ORDER} labels={DECODE_STEP_LABEL} log={decodeLog} running={decoding} failed={!!decodeError} />}
+      {decoded && (
+        <dl>
+          <Readout label="FFT" value={`radix-2 ${fftKind.toUpperCase()} · N = 2^${decoded.fftStages}`} />
+          <Readout label="Butterflies" value={decoded.butterflyCount.toLocaleString('en-US')} />
+          <Readout label="FFT time" value={`${decoded.fftMs.toFixed(1)} ms`} />
+          <Readout label="Wall time" value={`${fmtMs(decoded.totalMs)} ms`} tone="ok" />
+        </dl>
+      )}
+      <Button className="w-full" size="lg" onClick={() => goTo(4)} disabled={!decoded} icon={<ArrowRight className="size-4" aria-hidden="true" />}>
+        Open the results
+      </Button>
+    </>
+  )
 
   return (
-    <div className="space-y-6">
-      <GateCard
-        index={1}
-        tourTarget="receiver-overview"
-        icon={<FileAudio className="size-4 text-cyan-300" />}
-        title="Load the received audio"
-        hint="The receiver starts with nothing but the file that arrived. Load the stego WAV you downloaded."
-      >
-        <div className="space-y-3">
-          <div
-            onDragOver={(e) => {
-              e.preventDefault()
-              if (!loadingFile) setDragging(true)
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault()
-              setDragging(false)
-              const f = e.dataTransfer.files?.[0]
-              if (f && !loadingFile) void accept(f)
-            }}
-          >
-            {receivedFile && !audioCheck.error ? (
-              <div className="space-y-3">
-                <WaveformPlayer samples={receivedFile.samples} label={receivedFile.name} color="cyan" height={72} />
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
-                  {[
-                    ['Duration', `${receivedFile.duration.toFixed(2)} s`],
-                    ['Format', info ? `${info.format} · ${channelLabel(info.channels)}` : 'decoded audio'],
-                    ['Sample rate', formatHz(info?.sourceSampleRate ?? SAMPLE_RATE)],
-                    ['File size', info ? formatBytes(info.bytes) : '—'],
-                  ].map(([label, value]) => (
-                    <div key={label} className="min-w-0">
-                      <dt className="text-[10px] uppercase tracking-wider text-slate-500">{label}</dt>
-                      <dd className="truncate font-mono text-[11px] text-slate-300">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                disabled={loadingFile}
-                className={cn(
-                  'flex min-h-[132px] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-sm transition',
-                  dragging ? 'border-cyan-300/70 bg-cyan-400/5 text-cyan-200' : 'border-white/15 text-slate-500 hover:border-white/30 hover:text-slate-300',
-                )}
-              >
-                <Upload className="size-6" aria-hidden="true" />
-                <span>{loadingFile ? 'Reading the file…' : dragging ? 'Drop the file to load it' : 'Drop the stego WAV here, or click to choose one'}</span>
-              </button>
-            )}
-          </div>
+    <StageFrame
+      index="04"
+      role="Decoding station"
+      title="Receive"
+      lead="Works on its own: a file and a key are all it uses. Nothing is borrowed from the sender — not the audio, not the key."
+      aside={aside}
+    >
+      <TransmissionAnimation compact phase={journey.phase} noisy={journey.noisy} channelUnknown={journey.channelUnknown} senderLabel={journey.senderLabel} failure={verdict && !verdict.success ? verdict.title : undefined} />
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" size="sm" icon={<Upload className="size-3.5" />} onClick={() => fileRef.current?.click()} disabled={loadingFile}>
-              {receivedFile ? 'Choose another file' : 'Choose file'}
+      <Gate index="A" title="Received audio" done={audioReady} tourTarget="rx-file">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            if (!loading) setDragging(true)
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragging(false)
+            const f = e.dataTransfer.files?.[0]
+            if (f) void accept(f)
+          }}
+          className={cn('border transition-colors', dragging ? 'border-teal bg-teal/5' : 'border-line bg-bg-2')}
+        >
+          {receivedFile && audioReady ? (
+            <div className="p-4">
+              <WaveformPlayer samples={receivedFile.samples} label={receivedFile.name} note={origin} height={64} />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={loading}
+              className="grid-paper flex h-[150px] w-full flex-col items-center justify-center gap-1.5 text-center text-fg-3 transition-colors hover:text-fg-2"
+            >
+              <span className="text-[14px] text-fg-2">{loading ? 'Decoding the file…' : dragging ? 'Release to load' : 'Drop the stego WAV here, or click to choose it'}</span>
+              <span className="font-mono text-[11px]">use the WAV exactly as exported · first {MAX_DURATION_S} s used</span>
+            </button>
+          )}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()} disabled={loading || decoding} icon={<Upload className="size-3.5" aria-hidden="true" />}>
+            {receivedFile ? 'Choose another file' : 'Choose file'}
+          </Button>
+          {receivedFile && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={decoding}
+              onClick={() => {
+                setReceivedFile(null)
+                setFileError(null)
+              }}
+              icon={<RotateCcw className="size-3.5" aria-hidden="true" />}
+            >
+              Clear
             </Button>
-            {receivedFile && (
-              <Button variant="ghost" size="sm" icon={<RotateCcw className="size-3.5" />} onClick={clearFile}>
-                Clear
-              </Button>
-            )}
-            {!receivedFile && transmitted && (
-              <button onClick={useChannelAudio} className="text-xs text-cyan-300 underline-offset-2 hover:underline">
-                or use the file from the simulated channel
-              </button>
-            )}
-          </div>
-
+          )}
           <input
             ref={fileRef}
             type="file"
-            accept="audio/*"
+            accept="audio/*,.wav"
             className="hidden"
-            aria-label="Received stego audio"
+            aria-label="Choose the received audio file"
             onChange={(e) => {
               const f = e.target.files?.[0]
               e.target.value = ''
               if (f) void accept(f)
             }}
           />
-
-          {fileError && <Notice tone="error">{fileError}</Notice>}
+        </div>
+        <div className="mt-3 space-y-2" aria-live="polite">
+          {fileError && <Notice tone="error" title="Could not read that file">{fileError}</Notice>}
           {audioCheck.error && <Notice tone="error">{audioCheck.error}</Notice>}
           {audioCheck.warning && <Notice tone="warning">{audioCheck.warning}</Notice>}
-        </div>
-      </GateCard>
-
-      <GateCard
-        index={2}
-        tourTarget="receiver-key"
-        icon={<KeyRound className="size-4 text-amber-200" />}
-        title="Enter the receiver key"
-        hint="Type the key the sender shared with you. It is never filled in for you."
-        locked={!audioReady}
-        lockedHint="Unlocks once a valid audio file is loaded."
-        done={keyReady}
-      >
-        <div className="space-y-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <div className="relative grow">
-              <label htmlFor="rkey" className="sr-only">
-                Receiver key
-              </label>
-              <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-amber-200/60" aria-hidden="true" />
-              <input
-                id="rkey"
-                type={showKey ? 'text' : 'password'}
-                value={receiverKey}
-                placeholder="the sender’s secret key…"
-                autoComplete="off"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                aria-invalid={!!keyError}
-                aria-describedby="rkey-help"
-                onChange={(e) => {
-                  s.setReceiverKey(e.target.value)
-                  setKeyError(null)
-                  setDecodeError(null)
-                  if (e.target.value.trim().length === 0) setKeyConfirmed(false)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') confirmKey()
-                }}
-                className={cn(
-                  'w-full rounded-xl bg-black/30 py-3 pl-10 pr-12 font-mono text-sm tracking-wide text-amber-200 outline-none ring-1 transition focus:ring-amber-300/60',
-                  keyError ? 'ring-rose-400/50' : 'ring-white/10',
-                )}
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-pressed={showKey}
-                aria-label={showKey ? 'Hide the receiver key' : 'Show the receiver key'}
-                className="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-amber-200"
-              >
-                {showKey ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
-              </button>
-            </div>
-            <Button onClick={confirmKey} disabled={receiverKey.trim().length === 0} icon={<CircleCheck className="size-4" />}>
-              {keyReady ? 'Key set' : 'Use this key'}
-            </Button>
-          </div>
-          <p id="rkey-help" className="text-xs leading-relaxed text-slate-500">
-            Nothing here is checked against the sender — whether the key is right only becomes clear once the audio is decoded.
-          </p>
-          {keyError && <Notice tone="error">{keyError}</Notice>}
-          {keyCheck.warning && !keyError && <Notice tone="warning">{keyCheck.warning}</Notice>}
-        </div>
-      </GateCard>
-
-      <GateCard
-        index={3}
-        tourTarget="receiver-fft"
-        icon={<SlidersHorizontal className="size-4 text-violet-300" />}
-        title="Decoder settings and recovery"
-        hint="Pick the FFT variant the decoder should use, then recover the hidden message."
-        locked={!keyReady}
-        lockedHint="Unlocks once a key has been entered."
-        done={!!decoded}
-      >
-        <div className="space-y-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div className="space-y-2">
-              <div className="text-xs text-slate-400">
-                FFT algorithm <span className="text-slate-500">(used by the decoder)</span>
-              </div>
-              <Segmented
-                value={fftKind}
-                onChange={s.setFftKind}
-                options={[
-                  { value: 'dit', label: 'Radix-2 DIT' },
-                  { value: 'dif', label: 'Radix-2 DIF' },
-                ]}
-              />
-            </div>
-            <Button
-              data-tour-target="receiver-action"
-              size="lg"
-              onClick={() => void recover()}
-              loading={busy === 'decode'}
-              disabled={!keyReady}
-              icon={<Binary className="size-4" />}
-            >
-              Recover hidden message
-            </Button>
-          </div>
-          {decodeError && <Notice tone="error">{decodeError}</Notice>}
-          {verdict && !decodeError && (
-            <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
-              <Notice tone={verdict.tone === 'ok' ? 'ok' : verdict.tone === 'bad' ? 'error' : 'warning'}>
-                <div className="font-semibold">{verdict.title}</div>
-                <p className="mt-1 opacity-90">{verdict.detail}</p>
-                {decoded?.text.text && (
-                  <div className="mt-2 rounded-lg bg-black/30 px-3 py-2 font-mono text-sm break-words text-white">{decoded.text.text}</div>
-                )}
-              </Notice>
-            </motion.div>
+          {info && info.format !== 'WAV' && audioReady && (
+            <Notice tone="warning">This is a {info.format} file. Lossy formats usually remove the bands above 16 kHz that carry the message; decoding will show whether anything survived.</Notice>
           )}
         </div>
-      </GateCard>
+        {receivedFile && audioReady && (
+          <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,16rem)_1fr]">
+            <dl>
+              <Readout label="Duration" value={`${receivedFile.duration.toFixed(2)} s`} />
+              <Readout label="Sample rate" value={info?.sourceSampleRate ? formatHz(info.sourceSampleRate) : 'not stored'} />
+              <Readout label="Channels" value={info ? channelLabel(info.channels) : 'mono'} />
+              <Readout label="Format" value={info?.format ?? '—'} />
+              <Readout label="Size" value={info ? formatBytes(info.bytes) : '—'} />
+            </dl>
+            {spec && <SpectrogramCanvas spec={spec} title="Spectrogram · where the decoder will look" height={150} marks={marks} />}
+          </div>
+        )}
+      </Gate>
 
-      {decoded && receivedFile && (
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList
-            tabs={[
-              { value: 'butterfly', label: 'FFT butterflies', icon: <Binary className="size-4" /> },
-              { value: 'pipeline', label: 'Decoder pipeline', icon: <Workflow className="size-4" /> },
-            ]}
-          />
-          <TabsContent value="butterfly">
-            <ButterflyExplorer
-              key={`${fftKind}-${decoded.fftSize}`}
-              received={receivedFile.samples}
-              initialKind={fftKind}
-              stats={{ ...decoded, kind: fftKind }}
-            />
-          </TabsContent>
-          <TabsContent value="pipeline" className="space-y-6">
-            <Card>
-              <CardTitle
-                icon={<Workflow className="size-4" />}
-                title="Decoder block diagram"
-                hint="The exact mirror of the encoder. Click a block to hear the signal there."
-                right={
-                  <Button variant="ghost" size="sm" onClick={() => setEpoch((e) => e + 1)}>
-                    Replay
-                  </Button>
-                }
-              />
-              <PipelineFlow nodes={DECODE_NODES} edges={DECODE_EDGES} revealed={revealed} selectedId={selected} onSelect={setSelected} height={400} />
-            </Card>
-            <StageInspector
-              node={node}
-              views={decoded.stages}
-              layout={decoded.layout}
-              extra={
-                node.id === 'unpermute' ? (
-                  <PermutationView permutation={decoded.permutation} keyLabel={receiverKey} />
-                ) : node.id === 'despread' ? (
-                  <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_1fr]">
-                    <div className="rounded-xl bg-black/30 p-3 ring-1 ring-white/10">
-                      <div className="mb-1 text-[11px] text-slate-400">Despread symbols (BPSK constellation)</div>
-                      <ConstellationPlot re={decoded.text.softRe} im={decoded.text.softIm} />
-                    </div>
-                    {/* No reference bits: the receiver only ever sees what it decoded itself. */}
-                    <BitGrid bits={decoded.text.bits} title="Decided bits" />
-                  </div>
-                ) : node.id === 'decrypt' ? (
-                  <TextStatusBanner info={decoded.text} />
-                ) : node.id === 'message' ? (
-                  <TextDecodePanel info={decoded.text} sent={null} />
-                ) : null
+      <AnimatePresence initial={false}>
+        {audioReady && (
+          <Gate key="key" index="B" title="Receiver key" done={keyReady} tourTarget="rx-key">
+            <KeyField
+              id="rkey"
+              label="Key from the sender"
+              value={receiverKey}
+              onChange={(v) => {
+                setReceiverKey(v)
+                setKeyError(null)
+                setKeyConfirmed(false)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') confirmKey()
+              }}
+              placeholder="type the shared key"
+              invalid={!!keyError}
+              describedBy="rkey-help"
+              trailing={
+                <Button variant={keyReady ? 'secondary' : 'primary'} onClick={confirmKey} disabled={!receiverKey.trim() || keyReady} icon={<KeyRound className="size-4" aria-hidden="true" />}>
+                  {keyReady ? 'Key set' : 'Use key'}
+                </Button>
               }
             />
-          </TabsContent>
-        </Tabs>
+            <p id="rkey-help" className="mt-2 text-[12px] leading-relaxed text-fg-3">
+              Never filled in or checked against the sender. Whether it is right is decided by the decoder.
+            </p>
+            <div className="mt-2 space-y-2">
+              {keyError && <Notice tone="error">{keyError}</Notice>}
+              {keyCheck.warning && !keyError && <Notice tone="warning">{keyCheck.warning}</Notice>}
+            </div>
+          </Gate>
+        )}
+
+        {keyReady && (
+          <Gate key="decode" index="C" title="Decoder" done={!!decoded} tourTarget="rx-decode">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <p className="max-w-md text-[13px] text-fg-2">Runs the full decoder on this file with your key, then checks the result with AES-GCM before anything is shown.</p>
+              <div className="flex gap-2">
+                {decoding && (
+                  <Button variant="secondary" size="lg" onClick={cancel} icon={<X className="size-4" aria-hidden="true" />}>
+                    Cancel
+                  </Button>
+                )}
+                <Button size="lg" onClick={() => void decode()} loading={decoding} disabled={decoding} icon={<Binary className="size-4" aria-hidden="true" />}>
+                  {decoded ? 'Decode again' : 'Decode'}
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-3" aria-live="polite">
+              {decodeError && (
+                <Notice tone="error" title="The decoder could not process this file">
+                  {decodeError}
+                </Notice>
+              )}
+              {cancelled === 'decode' && !decoding && !decoded && <Notice tone="info">Decoding was cancelled. No result was produced.</Notice>}
+              {verdict && decoded && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }}>
+                  <Notice tone={verdict.tone === 'ok' ? 'ok' : verdict.tone === 'bad' ? 'error' : 'warning'} title={verdict.title}>
+                    {verdict.detail}
+                    {verdict.success && decoded.text.text !== null && <span className="mt-2 block whitespace-pre-wrap break-words font-mono text-[14px] text-fg">{decoded.text.text}</span>}
+                  </Notice>
+                </motion.div>
+              )}
+            </div>
+          </Gate>
+        )}
+      </AnimatePresence>
+
+      {(decoding || (decodeLog.length > 0 && !decoded)) && (
+        <div className="mt-10">
+          <LiveDecoder />
+        </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-slate-500">
-          {decoded ? (
-            <span className="inline-flex items-center gap-2">
-              <Badge>decoded with the key you entered</Badge>
-            </span>
-          ) : (
-            'Load a file and enter a key to recover the hidden message.'
-          )}
-        </div>
-        <Button size="lg" onClick={() => s.goTo(4)} disabled={!decoded} icon={<ArrowRight className="size-5" />}>
-          Hear the recovered secret
-        </Button>
-      </div>
-      <BeginnerTour open={s.uiMode === 'beginner' && tourOpen} steps={BEGINNER_RECEIVER_TOUR_STEPS} onClose={() => setTourOpen(false)} />
-    </div>
+      {decoded && receivedFile && (
+        <section className="mt-14" aria-label="Decoder internals">
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList
+              label="Decoder views"
+              tabs={[
+                { value: 'pipeline', label: 'Decoder walkthrough', icon: <Workflow className="size-3.5" aria-hidden="true" /> },
+                { value: 'butterfly', label: 'FFT butterflies', icon: <Binary className="size-3.5" aria-hidden="true" /> },
+              ]}
+            />
+            <TabsContent value="pipeline">
+              <DecoderWalkthrough dec={decoded} kind={fftKind} />
+            </TabsContent>
+            <TabsContent value="butterfly">
+              <ButterflyExplorer key={decoded.fftSize} role="decoder" re={receivedFile.samples} inputLabel="Received audio r[n]" stats={{ ...decoded, kind: fftKind }} />
+            </TabsContent>
+          </Tabs>
+        </section>
+      )}
+
+      <BeginnerTour open={tourOpen} steps={TOUR} onClose={() => setTourOpen(false)} />
+    </StageFrame>
   )
 }

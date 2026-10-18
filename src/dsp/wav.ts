@@ -1,3 +1,28 @@
+/** Mono 32-bit IEEE-float WAV: keeps samples bit-exact, for a channel that does not quantise. */
+export function encodeWavFloat32(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const dataBytes = samples.length * 4
+  const buf = new ArrayBuffer(44 + dataBytes)
+  const v = new DataView(buf)
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i))
+  }
+  writeStr(0, 'RIFF')
+  v.setUint32(4, 36 + dataBytes, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 3, true) // IEEE float
+  v.setUint16(22, 1, true)
+  v.setUint32(24, sampleRate, true)
+  v.setUint32(28, sampleRate * 4, true)
+  v.setUint16(32, 4, true)
+  v.setUint16(34, 32, true)
+  writeStr(36, 'data')
+  v.setUint32(40, dataBytes, true)
+  for (let i = 0; i < samples.length; i++) v.setFloat32(44 + i * 4, samples[i], true)
+  return buf
+}
+
 /** Encodes mono float samples as a 16-bit PCM WAV file (clipped to [-1, 1]). */
 export function encodeWav16(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const dataBytes = samples.length * 2
@@ -26,7 +51,7 @@ export function encodeWav16(samples: Float32Array, sampleRate: number): ArrayBuf
   return buf
 }
 
-/** Minimal 16-bit PCM WAV reader (mono or first channel), used by tests. Walks RIFF chunks. */
+/** Minimal 16-bit PCM / 32-bit float WAV reader (mono or first channel), used by tests. Walks RIFF chunks. */
 export function decodeWav16(buf: ArrayBuffer): { samples: Float32Array; sampleRate: number } {
   const v = new DataView(buf)
   const tag = (off: number) => String.fromCharCode(v.getUint8(off), v.getUint8(off + 1), v.getUint8(off + 2), v.getUint8(off + 3))
@@ -34,16 +59,24 @@ export function decodeWav16(buf: ArrayBuffer): { samples: Float32Array; sampleRa
   let sampleRate = 0
   let channels = 1
   let bits = 0
+  let format = 1
   let off = 12
   while (off + 8 <= v.byteLength) {
     const id = tag(off)
     const size = v.getUint32(off + 4, true)
     const body = off + 8
     if (id === 'fmt ') {
+      format = v.getUint16(body, true)
       channels = v.getUint16(body + 2, true)
       sampleRate = v.getUint32(body + 4, true)
       bits = v.getUint16(body + 14, true)
     } else if (id === 'data') {
+      if (format === 3 && bits === 32) {
+        const frames = Math.floor(size / (4 * channels))
+        const samples = new Float32Array(frames)
+        for (let i = 0; i < frames; i++) samples[i] = v.getFloat32(body + i * 4 * channels, true)
+        return { samples, sampleRate }
+      }
       if (bits !== 16) throw new Error(`Only 16-bit PCM supported, got ${bits}-bit`)
       const frames = Math.floor(size / (2 * channels))
       const samples = new Float32Array(frames)

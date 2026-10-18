@@ -1,12 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --color-ink-950: #05080f;
-  --color-ink-900: #0a0f1c;
-  --color-ink-800: #111827;
-  --color-ink-700: #1c2538;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-bg: #071522;
+  --color-bg-2: #0a1c2c;
+  --color-panel: #10283a;
+  --color-panel-2: #163349;
+  --color-line: #1b3549;
+  --color-line-2: #2a4b63;
+  --color-fg: #e7f0f6;
+  --color-fg-2: #a9bfce;
+  --color-fg-3: #7d97ab;
+  --color-teal: #20d6c7;
+  --color-teal-dim: #138f86;
+  --color-blue: #4ea5ff;
+  --color-ok: #8fe3b0;
+  --color-warn: #f2c46d;
+  --color-err: #ff8a80;
+  --color-ink: #04111b;
 }
 
 html,
@@ -15,42 +28,63 @@ body,
   min-height: 100%;
 }
 
+html {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
-  background: var(--color-ink-950);
-  color: #e2e8f0;
+  background: var(--color-bg);
+  color: var(--color-fg);
   font-family: var(--font-sans);
+  font-feature-settings: "ss02";
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.bg-grid {
-  background-image:
-    radial-gradient(circle at 20% -10%, rgba(34, 211, 238, 0.12), transparent 45%),
-    radial-gradient(circle at 90% 10%, rgba(167, 139, 250, 0.12), transparent 40%),
-    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
-  background-size: auto, auto, 40px 40px, 40px 40px;
+::selection {
+  background: color-mix(in srgb, var(--color-teal) 35%, transparent);
+  color: var(--color-fg);
 }
 
-/* React Flow: match the dark theme */
-.react-flow__attribution {
-  background: transparent;
-  opacity: 0.5;
-}
-.react-flow__attribution a {
-  color: #64748b;
-}
-.react-flow__edge-path {
-  stroke-width: 2;
-}
-.react-flow__handle {
-  opacity: 0;
-}
-
-/* Range-like focus ring for Radix controls */
 :focus-visible {
-  outline: 2px solid #22d3ee;
+  outline: 2px solid var(--color-teal);
   outline-offset: 2px;
+}
+
+/* tabular figures everywhere numbers are compared */
+.font-mono,
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* fine engineering grid, used only behind instruments */
+.grid-paper {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-line) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-line) 55%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+}
+
+/* signal flowing along a wire: only while the stage it feeds is actually being processed or shown */
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+.wire-flow {
+  stroke-dasharray: 4 4;
+  animation: wire-flow 0.9s linear infinite;
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+.rec-blink {
+  animation: rec-blink 1.1s steps(1) infinite;
 }
 
 ::-webkit-scrollbar {
@@ -58,11 +92,22 @@ body {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1f2a40;
-  border-radius: 8px;
+  background: var(--color-line-2);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-/* Stage 2's encoder walkthrough is stepped through by hand, so its wires crawl instead of racing. */
-.flow-slow .react-flow__edge.animated path {
-  animation-duration: 1.6s;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .wire-flow {
+    stroke-dasharray: none;
+  }
 }

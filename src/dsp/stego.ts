@@ -42,7 +42,12 @@ export interface EncodeParams {
   fftKind: FftKind
   /** Framed bitstream (header + encrypted text) for the hidden text lane, if any. */
   textBits?: Uint8Array | null
+  /** Called as each real processing stage finishes, with the time it took (ms). */
+  onProgress?: (stage: EncodeProgressStage, ms: number) => void
 }
+
+/** Processing stages in the order `encode()` actually runs them. */
+export type EncodeProgressStage = 'fft' | 'fir' | 'reverse' | 'scramble' | 'embed' | 'lane' | 'ifft'
 
 export interface EncodeResult {
   stages: Record<EncodeStageId, Float32Array>
@@ -53,6 +58,8 @@ export interface EncodeResult {
   /** Extra scale applied to the whole stego file to avoid clipping (1 = none). */
   clipScale: number
   secretTruncated: boolean
+  /** False when only text was hidden: the voice carrier band is left cleared and empty. */
+  hasVoice: boolean
   lane: { layout: LaneLayout; bits: Uint8Array | null; amplitude: number }
 }
 
@@ -61,7 +68,11 @@ export interface DecodeParams {
   fftKind: FftKind
   /** Also decode with this (wrong) key, reusing the same FFT, for comparison. */
   wrongKey?: string
+  onProgress?: (stage: DecodeProgressStage, ms: number) => void
 }
+
+/** Processing stages in the order `decode()` actually runs them. */
+export type DecodeProgressStage = 'fft' | 'extract' | 'unscramble' | 'lane' | 'ifft'
 
 export interface DecodeResult {
   stages: Record<DecodeStageId, Float32Array>
@@ -128,15 +139,26 @@ export function reverseInFrequency(spec: Spectrum, length: number): Spectrum {
  * Implemented with 5 FFTs of size N: one two-for-one FFT (secret + cover), one for the FIR, and
  * three two-for-one inverse FFTs that produce the six time-domain signals shown in the UI.
  */
-export function encode(cover: Float32Array, secret: Float32Array, sampleRate: number, params: EncodeParams): EncodeResult {
+export function encode(cover: Float32Array, secret: Float32Array | null, sampleRate: number, params: EncodeParams): EncodeResult {
   assertKey(params.key)
-  if (cover.length === 0 || secret.length === 0) throw new Error('Cover and secret audio must not be empty')
+  if (cover.length === 0) throw new Error('Cover audio must not be empty')
   if (peak(cover) === 0) throw new Error('Cover audio is silent')
-  if (peak(secret) === 0) throw new Error('Secret audio is silent')
+  const hasVoice = secret !== null
+  if (secret && secret.length === 0) throw new Error('Secret audio must not be empty')
+  if (secret && peak(secret) === 0) throw new Error('Secret audio is silent')
+  const textBits = params.textBits ?? null
+  if (!hasVoice && !(textBits && textBits.length > 0)) throw new Error('Nothing to hide: add a secret voice or a text message')
+
+  let mark = performance.now()
+  const progress = (stage: EncodeProgressStage) => {
+    const now = performance.now()
+    params.onProgress?.(stage, now - mark)
+    mark = now
+  }
 
   const length = cover.length
-  const secretTruncated = secret.length > length
-  const secretFit = fitLength(secret, length)
+  const secretTruncated = !!secret && secret.length > length
+  const secretFit = fitLength(secret ?? new Float32Array(length), length)
   const kind = params.fftKind
   const n = fftSizeFor(length)
   const layout = computeLayout(n, sampleRate)
@@ -144,6 +166,7 @@ export function encode(cover: Float32Array, secret: Float32Array, sampleRate: nu
 
   // 1) secret and cover spectra from one complex FFT
   const [secretSpec, coverSpec] = fftTwoReal(secretFit, cover, n, kind)
+  progress('fft')
 
   // 2) FIR band-pass as a multiplication, then undo the filter's (taps-1)/2 group delay
   const fir = designBandpass(FIR_TAPS, SECRET_LOW_HZ, SECRET_HIGH_HZ, sampleRate)
@@ -154,15 +177,18 @@ export function encode(cover: Float32Array, secret: Float32Array, sampleRate: nu
     bandlimitedSpec.im[k] = secretSpec.re[k] * firSpec.im[k] + secretSpec.im[k] * firSpec.re[k]
   }
   advance(bandlimitedSpec, (FIR_TAPS - 1) / 2)
+  progress('fir')
 
   // 3) time reversal via the conjugation property
   const reversedSpec = reverseInFrequency(bandlimitedSpec, length)
+  progress('reverse')
 
   // 4) scramble in the speech band
   const band = takeBand(reversedSpec, baseLow, width)
   const inverted = invertBand(band)
   const permutation = keyedPermutation(params.key, subbands)
   const permuted = permuteBand(inverted, permutation, subbandWidth)
+  progress('scramble')
 
   // 5) clear the carrier band in the cover, scale and park the secret there
   const coverCleared = cloneSpectrum(coverSpec)
@@ -170,20 +196,21 @@ export function encode(cover: Float32Array, secret: Float32Array, sampleRate: nu
   const laneLayout = computeLaneLayout(n, sampleRate)
   clearBand(coverCleared, laneLayout.start, laneLayout.width)
   const secretE = bandEnergy(permuted, n)
-  if (secretE === 0) throw new Error('Secret has no energy in the 300-3400 Hz speech band')
-  const gain = Math.sqrt((energy(cover) * 10 ** (params.strengthDb / 10)) / secretE)
+  if (hasVoice && secretE === 0) throw new Error('Secret has no energy in the 300-3400 Hz speech band')
+  const gain = hasVoice ? Math.sqrt((energy(cover) * 10 ** (params.strengthDb / 10)) / secretE) : 0
   const scaled = scaleBand(permuted, gain)
   const stegoSpec = cloneSpectrum(coverCleared)
-  addBand(stegoSpec, carrierLow, scaled)
+  if (hasVoice) addBand(stegoSpec, carrierLow, scaled)
+  progress('embed')
 
   // 6) hidden text lane: spread BPSK symbols at 20.1-21.9 kHz
-  const textBits = params.textBits ?? null
   const laneAmp = laneAmplitude(energy(cover), laneLayout, n, LANE_STRENGTH_DB)
   const laneSpec = emptySpectrum(n)
   if (textBits && textBits.length > 0) {
     writeLane(laneSpec, laneLayout, textBits, params.key, laneAmp)
     writeLane(stegoSpec, laneLayout, textBits, params.key, laneAmp)
   }
+  progress('lane')
 
   // 7) back to time: seven real signals from four complex IFFTs
   const [bandlimited, invertedT, permutedT, shiftedT, coverClearedT, stegoRaw, laneT] = inverseManyReal(
@@ -199,6 +226,7 @@ export function encode(cover: Float32Array, secret: Float32Array, sampleRate: nu
     length,
     kind,
   )
+  progress('ifft')
   const p = peak(stegoRaw)
   const clipScale = p > 0.99 ? 0.99 / p : 1
   const limit = (x: Float32Array) => (clipScale === 1 ? x : x.map((v) => v * clipScale))
@@ -222,6 +250,7 @@ export function encode(cover: Float32Array, secret: Float32Array, sampleRate: nu
     gain,
     clipScale,
     secretTruncated,
+    hasVoice,
     lane: { layout: laneLayout, bits: textBits, amplitude: laneAmp * clipScale },
   }
 }
@@ -253,16 +282,26 @@ export function decode(received: Float32Array, sampleRate: number, params: Decod
   const t0 = performance.now()
   fft(re, im, { kind })
   const fftMs = performance.now() - t0
+  params.onProgress?.('fft', fftMs)
+  let mark = performance.now()
+  const progress = (stage: DecodeProgressStage) => {
+    const now = performance.now()
+    params.onProgress?.(stage, now - mark)
+    mark = now
+  }
   const spec: Spectrum = { re, im, n }
 
   const band = takeBand(spec, carrierLow, width)
+  progress('extract')
   const right = unscramble(band, layout, params.key)
   const wrong = params.wrongKey ? unscramble(band, layout, params.wrongKey) : null
+  progress('unscramble')
 
   // the same FFT also carries the hidden text lane
   const laneLayout = computeLaneLayout(n, sampleRate)
   const lane = readLane(spec, laneLayout, params.key)
   const wrongLane = params.wrongKey ? readLane(spec, laneLayout, params.wrongKey) : null
+  progress('lane')
 
   const [bandExtracted, baseband, depermuted, deinverted, laneT, wrongDeinverted] = inverseManyReal(
     [
@@ -276,6 +315,7 @@ export function decode(received: Float32Array, sampleRate: number, params: Decod
     length,
     kind,
   )
+  progress('ifft')
 
   return {
     stages: {

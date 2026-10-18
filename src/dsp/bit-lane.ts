@@ -9,7 +9,27 @@ import { hashKey, mulberry32 } from './prng'
  * The receiver multiplies by the same chips and sums ("despreading"), gaining 10·log10(chips) dB of SNR.
  */
 
+/**
+ * The sync byte also says what the sender hid. 0xA5 is the original voice + text frame, so files made
+ * before the other two existed decode exactly as before (original voice-only files carry no frame at all).
+ * 0xA6 = text only. 0xA7 = voice only: its payload is AES-GCM of an empty plaintext, so the receiver can
+ * authenticate the key cryptographically even though the analogue voice itself cannot be authenticated.
+ */
+export type FrameContent = 'voice+text' | 'text' | 'voice'
+
 export const MAGIC = 0xa5
+export const MAGIC_TEXT_ONLY = 0xa6
+export const MAGIC_VOICE_ONLY = 0xa7
+
+const MAGIC_FOR: Record<FrameContent, number> = { 'voice+text': MAGIC, text: MAGIC_TEXT_ONLY, voice: MAGIC_VOICE_ONLY }
+
+function contentFor(magic: number, length: number): FrameContent | null {
+  if (magic === MAGIC && length > 0) return 'voice+text'
+  if (magic === MAGIC_TEXT_ONLY && length > 0) return 'text'
+  if (magic === MAGIC_VOICE_ONLY && length > 0) return 'voice'
+  return null
+}
+
 /** Sync byte (8 bits) + payload length in bytes (16 bits). */
 export const HEADER_BITS = 24
 
@@ -57,13 +77,15 @@ export function bitsToBytes(bits: Uint8Array): Uint8Array {
 }
 
 /** Header (magic + 16-bit length) followed by the payload, as a 0/1 bit array. */
-export function frameBits(payload: Uint8Array, layout: LaneLayout): Uint8Array {
+export function frameBits(payload: Uint8Array, layout: LaneLayout, content: FrameContent = 'voice+text'): Uint8Array {
   if (payload.length > 0xffff) throw new Error('Payload too large')
+  if (payload.length === 0) throw new Error('A frame needs a payload (the ciphertext, or the key token for voice)')
+  if (layout.capacityBits < HEADER_BITS) throw new Error('This cover is too short to carry the sync header')
   const capacity = payloadCapacityBytes(layout)
   if (payload.length > capacity) {
     throw new Error(`Hidden text needs ${payload.length} bytes but this cover can carry only ${capacity}. Use a shorter message or a longer cover.`)
   }
-  const header = Uint8Array.of(MAGIC, payload.length >> 8, payload.length & 0xff)
+  const header = Uint8Array.of(MAGIC_FOR[content], payload.length >> 8, payload.length & 0xff)
   const bytes = new Uint8Array(header.length + payload.length)
   bytes.set(header, 0)
   bytes.set(payload, header.length)
@@ -119,6 +141,8 @@ export interface LaneReadout {
   payload: Uint8Array | null
   headerMagic: number
   headerLength: number
+  /** What the sender declared in the sync byte, when the header synced. */
+  content: FrameContent | null
 }
 
 function despread(spec: Spectrum, layout: LaneLayout, chips: Int8Array, bitIndex: number): [number, number] {
@@ -149,13 +173,18 @@ export function readLane(spec: Spectrum, layout: LaneLayout, key: string): LaneR
     return { re, im, bits }
   }
 
+  if (layout.capacityBits < HEADER_BITS) {
+    const empty = new Float32Array(0)
+    return { status: 'no-payload', softRe: empty, softIm: empty, bits: new Uint8Array(0), payload: null, headerMagic: 0, headerLength: 0, content: null }
+  }
   const header = readBits(0, HEADER_BITS)
   const hb = bitsToBytes(header.bits)
   const magic = hb[0]
   const length = (hb[1] << 8) | hb[2]
   const fits = HEADER_BITS + length * 8 <= layout.capacityBits
-  if (magic !== MAGIC || length === 0 || !fits) {
-    return { status: 'no-payload', softRe: header.re, softIm: header.im, bits: header.bits, payload: null, headerMagic: magic, headerLength: length }
+  const content = fits ? contentFor(magic, length) : null
+  if (!content) {
+    return { status: 'no-payload', softRe: header.re, softIm: header.im, bits: header.bits, payload: null, headerMagic: magic, headerLength: length, content: null }
   }
   const body = readBits(HEADER_BITS, length * 8)
   const softRe = new Float32Array(HEADER_BITS + length * 8)
@@ -167,7 +196,7 @@ export function readLane(spec: Spectrum, layout: LaneLayout, key: string): LaneR
   softIm.set(body.im, HEADER_BITS)
   bits.set(header.bits)
   bits.set(body.bits, HEADER_BITS)
-  return { status: 'ok', softRe, softIm, bits, payload: bitsToBytes(body.bits), headerMagic: magic, headerLength: length }
+  return { status: 'ok', softRe, softIm, bits, payload: bitsToBytes(body.bits), headerMagic: magic, headerLength: length, content }
 }
 
 /** Fraction of differing bits over the overlapping length. */

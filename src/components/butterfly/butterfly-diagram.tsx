@@ -71,11 +71,11 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
                 y={2}
                 width={colX(s + 1) - colX(s) - 12}
                 height={20}
-                rx={6}
-                fill={active ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.03)'}
-                stroke={active ? 'rgba(251,191,36,0.6)' : 'rgba(255,255,255,0.08)'}
+                rx={1}
+                fill={active ? 'rgba(32,214,199,0.12)' : 'rgba(16,40,58,0.6)'}
+                stroke={active ? '#20d6c7' : '#1b3549'}
               />
-              <text x={(colX(s) + colX(s + 1)) / 2} y={16} textAnchor="middle" className="fill-slate-300 text-[10px] font-semibold">
+              <text x={(colX(s) + colX(s + 1)) / 2} y={16} textAnchor="middle" className="fill-fg-2 font-mono text-[10px]">
                 Stage {s + 1} · span {span}
               </text>
             </g>
@@ -88,7 +88,7 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
           const x1 = colX(b.stage + 1)
           const done = b.flat < cursor
           const isCur = current?.flat === b.flat
-          const stroke = isCur ? '#fbbf24' : done ? 'rgba(34,211,238,0.55)' : 'rgba(148,163,184,0.18)'
+          const stroke = isCur ? '#20d6c7' : done ? 'rgba(78,165,255,0.6)' : 'rgba(42,75,99,0.7)'
           const sw = isCur ? 2.4 : 1.2
           const yt = rowY(b.top)
           const yb = rowY(b.bottom)
@@ -102,7 +102,7 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
               <line x1={x0} y1={yt} x2={x1} y2={yb} stroke={stroke} strokeWidth={sw} />
               <line x1={x0} y1={yb} x2={x1} y2={yt} stroke={stroke} strokeWidth={sw} />
               {(isCur || n <= 8) && (
-                <text x={twX} y={yb + 14} textAnchor="middle" className="font-mono text-[9px]" fill={isCur ? '#fbbf24' : '#a78bfa'}>
+                <text x={twX} y={yb + 14} textAnchor="middle" className="font-mono text-[9px]" fill={isCur ? '#20d6c7' : '#7d97ab'}>
                   W{b.k === 0 ? '⁰' : ''}
                   <tspan fontSize="7" dy="-4">
                     {b.k === 0 ? '' : `${b.k}`}
@@ -110,7 +110,7 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
                 </text>
               )}
               {isCur && (
-                <text x={minusX} y={yb + 14} textAnchor="middle" className="font-mono text-[9px]" fill="#fb7185">
+                <text x={minusX} y={yb + 14} textAnchor="middle" className="font-mono text-[9px]" fill="#ff8a80">
                   −1
                 </text>
               )}
@@ -118,7 +118,7 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
                 <motion.circle
                   key={`pulse${b.flat}`}
                   r={4}
-                  fill="#fbbf24"
+                  fill="#20d6c7"
                   initial={{ cx: x0, cy: yt }}
                   animate={{ cx: x1, cy: yb }}
                   transition={{ duration: 0.6, repeat: Infinity, ease: 'easeInOut' }}
@@ -139,13 +139,13 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
                   cx={colX(c)}
                   cy={rowY(slot)}
                   r={inCur ? 6 : 4.5}
-                  fill={shown ? (inCur ? '#fbbf24' : c === cols - 1 ? '#34d399' : '#22d3ee') : '#1e293b'}
+                  fill={shown ? (inCur ? '#20d6c7' : c === cols - 1 ? '#8fe3b0' : '#4ea5ff') : '#1b3549'}
                   stroke="rgba(0,0,0,0.6)"
                 >
                   <title>{shown ? fmtComplex(re, col.im[slot], 4) : 'not computed yet'}</title>
                 </circle>
                 {showValues && shown && (
-                  <text x={colX(c)} y={rowY(slot) - 9} textAnchor="middle" className="fill-slate-400 font-mono text-[8.5px]">
+                  <text x={colX(c)} y={rowY(slot) - 9} textAnchor="middle" className="fill-fg-3 font-mono text-[8.5px]">
                     {fmtComplex(re, col.im[slot])}
                   </text>
                 )}
@@ -157,15 +157,15 @@ export function ButterflyDiagram({ trace, cursor, onPick }: ButterflyDiagramProp
         {/* input labels */}
         {trace.inputOrder.map((idx, slot) => (
           <text key={`in${slot}`} x={leftW - 14} y={rowY(slot)} dy="0.32em" textAnchor="end" className="font-mono text-[10px]">
-            <tspan className="fill-slate-200">x[{idx}]</tspan>
-            {kind === 'dit' && <tspan className="fill-slate-500"> {bin(slot, bits)}→{bin(idx, bits)}</tspan>}
+            <tspan className="fill-fg">x[{idx}]</tspan>
+            {kind === 'dit' && <tspan className="fill-fg-3"> {bin(slot, bits)}→{bin(idx, bits)}</tspan>}
           </text>
         ))}
         {/* output labels */}
         {trace.outputOrder.map((k, slot) => (
           <text key={`out${slot}`} x={width - rightW + 14} y={rowY(slot)} dy="0.32em" className="font-mono text-[10px]">
-            <tspan className="fill-emerald-300">X[{k}]</tspan>
-            {kind === 'dif' && <tspan className="fill-slate-500"> {bin(slot, bits)}→{bin(bitReverse(slot, bits), bits)}</tspan>}
+            <tspan className="fill-ok">X[{k}]</tspan>
+            {kind === 'dif' && <tspan className="fill-fg-3"> {bin(slot, bits)}→{bin(bitReverse(slot, bits), bits)}</tspan>}
           </text>
         ))}
       </svg>
